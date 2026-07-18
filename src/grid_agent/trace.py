@@ -39,6 +39,27 @@ class Tracer:
             with self.path.open("a", encoding="utf-8") as f:
                 f.write(line + "\n")
 
+    def bind(self, **fields: object) -> "BoundTracer":
+        """Return a view of this tracer that stamps `fields` (e.g. the
+        session_id) onto every event — one trace file stays shared across
+        all users, but each line is attributable to its session."""
+        return BoundTracer(self, fields)
+
+
+class BoundTracer(Tracer):
+    """Decorator around a Tracer that injects fixed fields into each event."""
+
+    def __init__(self, inner: Tracer, fields: dict[str, object]) -> None:
+        # No file/lock of our own — all writes delegate to `inner`.
+        self._inner = inner
+        self._fields = fields
+
+    def log(self, event: str, **payload: object) -> None:
+        self._inner.log(event, **self._fields, **payload)
+
+    def bind(self, **fields: object) -> "BoundTracer":
+        return BoundTracer(self._inner, {**self._fields, **fields})
+
 
 class NullTracer(Tracer):
     """No-op tracer for unit tests that don't care about tracing."""

@@ -1,0 +1,48 @@
+# grid_agent — app + PostgreSQL.
+#
+#   GEMINI_API_KEY=...  docker compose up --build
+#
+# (or put GEMINI_API_KEY in `.env` next to this file — compose reads it.)
+# App:      http://localhost:8000        Swagger: http://localhost:8000/docs
+# Postgres: localhost:5433 (grid/grid, db grid_agent) — host port 5433 to
+# avoid colliding with a locally installed Postgres on 5432.
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: grid
+      POSTGRES_PASSWORD: grid
+      POSTGRES_DB: grid_agent
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # The app only starts once Postgres actually accepts connections.
+      test: ["CMD-SHELL", "pg_isready -U grid -d grid_agent"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://grid:grid@db:5432/grid_agent
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3-flash-preview}
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      # Named volume (not a bind mount: on macOS, Docker Desktop needs
+      # explicit file-sharing permission for host folders). The trace
+      # still survives rebuilds; read it with:
+      #   docker compose exec app cat traces/trace.jsonl
+      - traces:/app/traces
+
+volumes:
+  pgdata:
+  traces:

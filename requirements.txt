@@ -15,6 +15,10 @@ google-genai>=1.0
 fastapi>=0.111
 uvicorn>=0.30
 
+# Persistence (per-user sessions in PostgreSQL)
+psycopg[binary]>=3.2
+psycopg-pool>=3.2
+
 # Config
 python-dotenv>=1.0
 

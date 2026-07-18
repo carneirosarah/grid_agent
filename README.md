@@ -9,27 +9,47 @@ never writes table contents directly. Every change is staged as a
 every event is persisted to a **`.jsonl` trace**.
 
 Built with Python, **LangGraph**, and the **Gemini** API (structured
-output). The original brief is preserved in [ASSIGNMENT.md](ASSIGNMENT.md);
+output). The original brief is preserved in [initial_prompt.md](docs/initial_prompt.md);
 design decisions and suggested improvements are in
-[DECISIONS.md](DECISIONS.md).
+[docs/DECISIONS.md](docs/DECISIONS.md).
 
 ---
 
-## Quickstart
+## Quickstart (Docker — app + PostgreSQL)
+
+```bash
+cp .env.example .env            # then paste your key from
+                                # https://aistudio.google.com/apikey
+docker compose up --build
+```
+
+Open <http://127.0.0.1:8000> for the app, <http://127.0.0.1:8000/docs>
+for the interactive Swagger API documentation. Each browser gets its own
+isolated session (a `grid_session` cookie), persisted in PostgreSQL —
+sessions, including undo history and chat context, survive restarts
+(`docker compose restart app` and reload to see it). Read the trace with
+`docker compose exec app cat traces/trace.jsonl`.
+
+## Quickstart (local, no database)
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-cp .env.example .env            # then paste your key from
-                                # https://aistudio.google.com/apikey
+cp .env.example .env            # add your Gemini key
 
 python scripts/generate_data.py # writes data/inventory.csv (350 x 9)
 uvicorn grid_agent.api:app --app-dir src --port 8000
 ```
 
-Open <http://127.0.0.1:8000> for the app, <http://127.0.0.1:8000/docs>
-for the interactive Swagger API documentation.
+Without `DATABASE_URL`, sessions live in process memory (still per-user,
+just not restart-proof). To use the compose database from a local server:
+
+```bash
+docker compose up -d db
+DATABASE_URL=postgresql://grid:grid@localhost:5433/grid_agent \
+    uvicorn grid_agent.api:app --app-dir src --port 8000
+```
 
 Try, in the chat:
 
@@ -42,7 +62,7 @@ Run the whole test suite (no API key needed; one live smoke test
 auto-skips without a key):
 
 ```bash
-pytest            # 76 tests
+pytest            # 86 tests (the Postgres one skips without DATABASE_URL)
 ```
 
 ## Architecture
@@ -97,7 +117,9 @@ src/grid_agent/
   engine.py                  Step 4  — deterministic apply + diff
   validator.py               Step 5  — semantic validation & coercion
   state.py                   Step 6  — session, preview, undo
-  trace.py                   .jsonl event log
+  sessions.py                per-user session store (locks, LRU, persist)
+  persistence.py             PostgreSQL / in-memory session repositories
+  trace.py                   .jsonl event log (session-stamped events)
   llm.py                     Step 7  — Gemini structured-output planner
   prompts/system_prompt.md   the agent's behavioural rules
   graph.py                   Step 8  — LangGraph plan→validate→preview
@@ -106,6 +128,7 @@ frontend/index.html          Step 11 — two-panel UI (vanilla JS)
 tests/                       Steps 3, 9 + unit tests for every module
 data/inventory.csv           generated dataset (git-ignored)
 traces/trace.jsonl           persisted trace (git-ignored)
+Dockerfile, docker-compose.yml   app container + PostgreSQL
 ```
 
 ## The 11 steps, and how to test each
@@ -189,14 +212,46 @@ pytest tests/test_e2e.py -v
 ```
 
 ### 10. FastAPI — [src/grid_agent/api.py](src/grid_agent/api.py)
-Thin, logic-free HTTP layer over the session; every endpoint is
-documented in Swagger (`/docs`). Factory `create_app()` takes injectable
-session/planner/tracer for offline HTTP tests.
+Thin, logic-free HTTP layer; every endpoint is documented in Swagger
+(`/docs`). Factory `create_app()` takes injectable store/planner/tracer
+for offline HTTP tests.
 
 ```bash
 pytest tests/test_api.py -v
 uvicorn grid_agent.api:app --app-dir src --port 8000
 curl -s localhost:8000/api/table | head -c 300
+```
+
+### Per-user sessions, concurrency & persistence
+Each user is identified by an opaque `grid_session` cookie and gets an
+isolated session ([sessions.py](src/grid_agent/sessions.py)). Every
+request holds that session's lock, so races from the same user (double
+Accept, two tabs) serialise cleanly — one wins, the other gets a 409 —
+while different users never contend. Durable state (committed table,
+undo stack, chat history — **not** the transient preview) is written
+through to PostgreSQL after each mutation
+([persistence.py](src/grid_agent/persistence.py)), dtype-faithfully, so
+sessions survive restarts; without `DATABASE_URL` an in-memory
+repository keeps the same code path working. Trace events carry the
+`session_id`.
+
+```bash
+pytest tests/test_sessions.py tests/test_api.py -v     # offline
+docker compose up -d db                                # live Postgres
+DATABASE_URL=postgresql://grid:grid@localhost:5433/grid_agent \
+    pytest tests/test_persistence_pg.py -v
+```
+
+### Docker — [Dockerfile](Dockerfile), [docker-compose.yml](docker-compose.yml)
+Two services: `db` (postgres:16-alpine, healthchecked, named volume) and
+`app` (built from the Dockerfile; regenerates the seeded dataset at
+start, waits for the db to be healthy). App containers are disposable —
+all session state lives in the database.
+
+```bash
+docker compose up --build          # app on :8000, Postgres on :5433
+docker compose restart app         # sessions survive (persisted in db)
+docker compose exec db psql -U grid -d grid_agent -c 'TABLE sessions'
 ```
 
 ### 11. Frontend — [frontend/index.html](frontend/index.html)

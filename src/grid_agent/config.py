@@ -36,3 +36,10 @@ MAX_REPAIR_ATTEMPTS = 2
 
 # --- State -----------------------------------------------------------------
 UNDO_STACK_LIMIT = 25      # snapshots kept for undo
+
+# --- Sessions & persistence ------------------------------------------------
+# Postgres DSN, e.g. postgresql://grid:grid@localhost:5432/grid_agent
+# Empty -> sessions live in process memory only (dev/tests without a DB).
+DATABASE_URL = os.getenv("DATABASE_URL", "")
+SESSION_COOKIE = "grid_session"     # cookie carrying the per-user session id
+SESSION_CACHE_LIMIT = 100           # live sessions kept in memory (LRU)
