@@ -1,0 +1,23 @@
+# Core data handling
+pandas>=2.2
+numpy>=1.26
+
+# Validation / schemas (operations are Pydantic models)
+pydantic>=2.7
+
+# Agent orchestration
+langgraph>=0.2
+
+# Gemini API (official google-genai SDK, supports structured output)
+google-genai>=1.0
+
+# Web layer
+fastapi>=0.111
+uvicorn>=0.30
+
+# Config
+python-dotenv>=1.0
+
+# Testing
+pytest>=8.0
+httpx>=0.27
