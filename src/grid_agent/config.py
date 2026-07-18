@@ -34,6 +34,12 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
 # its plan (feedback loop for "confidently wrong" model output).
 MAX_REPAIR_ATTEMPTS = 2
 
+# Per-million-token prices used to compute the cost recorded on each
+# `model_call` trace event. The Gemini flash free tier costs nothing, so
+# both default to 0 — set these when running on a paid tier.
+GEMINI_PRICE_INPUT_PER_1M = float(os.getenv("GEMINI_PRICE_INPUT_PER_1M", "0"))
+GEMINI_PRICE_OUTPUT_PER_1M = float(os.getenv("GEMINI_PRICE_OUTPUT_PER_1M", "0"))
+
 # --- State -----------------------------------------------------------------
 UNDO_STACK_LIMIT = 25      # snapshots kept for undo
 

@@ -32,9 +32,17 @@ class FakePlanner:
         self.calls: list[dict] = []
 
     def plan(self, table_context, history):
+        from grid_agent.llm import ModelCall
+
         self.calls.append({"context": table_context,
                            "history": [dict(m) for m in history]})
-        return self.replies.pop(0)
+        call = ModelCall(
+            model="fake-planner", system_prompt_ref="fake@00000000",
+            table_context_sha1="0" * 12, history_turns=len(history),
+            last_message_preview=history[-1]["text"][:200] if history else "",
+            input_tokens=10, output_tokens=5, total_tokens=15,
+            cost_usd=0.0, latency_ms=0.1)
+        return self.replies.pop(0), call
 
 
 # --- scripted replies ------------------------------------------------------
@@ -162,12 +170,25 @@ def test_full_turn_is_persisted_to_jsonl(tmp_path, small_df):
     session.accept()
     session.undo()
 
-    events = [json.loads(line)["event"]
-              for line in (tmp_path / "trace.jsonl").read_text().splitlines()]
-    for expected in ["user_message", "llm_reply", "validation_failed",
-                     "plan_validated", "preview_created", "turn_finished",
-                     "change_accepted", "undo"]:
+    records = [json.loads(line)
+               for line in (tmp_path / "trace.jsonl").read_text().splitlines()]
+    events = [r["event"] for r in records]
+    for expected in ["user_message", "model_call", "llm_reply",
+                     "validation_failed", "plan_validated", "preview_created",
+                     "turn_finished", "change_accepted", "undo"]:
         assert expected in events, f"missing trace event {expected}"
+
+    # Every model call is fully observable: model, prompt reference,
+    # token counts, cost and latency (one event per attempt — the repair
+    # turn produces a second one).
+    model_calls = [r for r in records if r["event"] == "model_call"]
+    assert len(model_calls) == 2                    # BAD_PLAN + GOOD_PLAN
+    for call in model_calls:
+        assert call["model"] == "fake-planner"
+        assert call["system_prompt_ref"]
+        assert call["input_tokens"] == 10 and call["output_tokens"] == 5
+        assert call["cost_usd"] == 0.0
+        assert call["latency_ms"] >= 0
 
 
 # --- real generated dataset -------------------------------------------------

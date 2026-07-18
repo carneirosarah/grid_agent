@@ -15,22 +15,94 @@ design decisions and suggested improvements are in
 
 ---
 
-## Quickstart (Docker — app + PostgreSQL)
+## Running the application with Docker Compose (recommended)
+
+This is the one-command way to run everything: the compose file starts
+**two services** — `db` (PostgreSQL 16, where user sessions are stored)
+and `app` (the FastAPI backend + frontend, built from the `Dockerfile`).
+The app waits for the database to be healthy before starting, and
+generates its dataset automatically — no manual setup steps.
+
+**Prerequisites:** Docker Desktop (or any Docker engine with the
+`docker compose` plugin) installed **and running**, and a free Gemini API
+key from <https://aistudio.google.com/apikey>.
+
+### 1. Configure your API key (one time)
 
 ```bash
-cp .env.example .env            # then paste your key from
-                                # https://aistudio.google.com/apikey
+cp .env.example .env
+```
+
+Open `.env` and set your key:
+
+```
+GEMINI_API_KEY=AIza...your-key-here
+```
+
+Compose reads `.env` automatically and passes the key into the app
+container. Everything except the chat works without a key — you just get
+a clear `503` when you message the agent.
+
+### 2. Build and start
+
+```bash
 docker compose up --build
 ```
 
-Open <http://127.0.0.1:8000> for the app, <http://127.0.0.1:8000/docs>
-for the interactive Swagger API documentation. Each browser gets its own
-isolated session (a `grid_session` cookie), persisted in PostgreSQL —
-sessions, including undo history and chat context, survive restarts
-(`docker compose restart app` and reload to see it). Read the trace with
-`docker compose exec app cat traces/trace.jsonl`.
+The first build takes a minute (base image + dependencies); later runs
+are cached. You're ready when the logs show:
 
-## Quickstart (local, no database)
+```
+db-1   | ... database system is ready to accept connections
+app-1  | INFO:     Uvicorn running on http://0.0.0.0:8000
+```
+
+(Add `-d` to run detached: `docker compose up --build -d`, then follow
+logs with `docker compose logs -f app`.)
+
+### 3. Use it
+
+| What | Where |
+|---|---|
+| The application (table + chat) | <http://127.0.0.1:8000> |
+| Swagger API documentation | <http://127.0.0.1:8000/docs> |
+| PostgreSQL (user `grid`, password `grid`, db `grid_agent`) | `localhost:5433` |
+
+Try this in the chat (the typo is intentional — see "confidently wrong
+output" below):
+
+> Increase eletronics prices by 10%, flag products with rating below 2,
+> then sort by price descending
+
+Each browser gets its own isolated table (a `grid_session` cookie),
+persisted in PostgreSQL: your edits, undo history, and chat context all
+survive an app restart — try `docker compose restart app` and reload.
+
+### Day-to-day commands
+
+```bash
+docker compose up -d               # start (already built)
+docker compose stop                # stop, keep all data
+docker compose logs -f app         # follow application logs
+docker compose exec app tail -f traces/trace.jsonl    # watch the trace live
+docker compose cp app:/app/traces/trace.jsonl traces/ # copy trace to host
+docker compose exec db psql -U grid -d grid_agent -c 'TABLE sessions'
+docker compose down                # stop and remove containers (data kept)
+docker compose down -v             # ALSO wipe sessions + trace volumes
+```
+
+### If something goes wrong
+
+- **`Cannot connect to the Docker daemon`** — Docker Desktop isn't
+  running; start it and retry.
+- **Port already in use** — something on your machine holds `8000` or
+  `5433`; either stop it or change the left-hand side of the `ports:`
+  mappings in `docker-compose.yml` (e.g. `"8080:8000"`).
+- **Chat returns 503** — `GEMINI_API_KEY` is missing/invalid in `.env`;
+  fix it and `docker compose up -d` again (the container reads it at
+  start).
+
+## Running locally without Docker (development)
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
@@ -43,7 +115,8 @@ uvicorn grid_agent.api:app --app-dir src --port 8000
 ```
 
 Without `DATABASE_URL`, sessions live in process memory (still per-user,
-just not restart-proof). To use the compose database from a local server:
+just not restart-proof). To get real persistence, run only the compose
+database and point the local server at it:
 
 ```bash
 docker compose up -d db
@@ -51,18 +124,13 @@ DATABASE_URL=postgresql://grid:grid@localhost:5433/grid_agent \
     uvicorn grid_agent.api:app --app-dir src --port 8000
 ```
 
-Try, in the chat:
+## Tests
 
-> Increase eletronics prices by 10%, flag products with rating below 2,
-> then sort by price descending
-
-(The typo is intentional — see "confidently wrong output" below.)
-
-Run the whole test suite (no API key needed; one live smoke test
-auto-skips without a key):
+No API key or database needed (the live-Gemini and Postgres tests
+auto-skip when their credentials are absent):
 
 ```bash
-pytest            # 86 tests (the Postgres one skips without DATABASE_URL)
+pytest            # 86 tests
 ```
 
 ## Architecture
@@ -246,10 +314,11 @@ DATABASE_URL=postgresql://grid:grid@localhost:5433/grid_agent \
 Two services: `db` (postgres:16-alpine, healthchecked, named volume) and
 `app` (built from the Dockerfile; regenerates the seeded dataset at
 start, waits for the db to be healthy). App containers are disposable —
-all session state lives in the database.
+all session state lives in the database. Full run instructions:
+["Running the application with Docker Compose"](#running-the-application-with-docker-compose-recommended)
+at the top of this file.
 
 ```bash
-docker compose up --build          # app on :8000, Postgres on :5433
 docker compose restart app         # sessions survive (persisted in db)
 docker compose exec db psql -U grid -d grid_agent -c 'TABLE sessions'
 ```
@@ -269,11 +338,43 @@ says so rather than improvising).
 
 ## Trace (`traces/trace.jsonl`)
 
-One JSON object per line: `user_message`, `llm_reply` (raw structured
+One JSON object per line, every event stamped with its `session_id`:
+`user_message`, `model_call` (see below), `llm_reply` (raw structured
 output, per attempt), `validation_failed` (error lists), `plan_validated`,
 `preview_created`, `change_accepted` / `change_rejected`, `undo`,
-`manual_edit`, `clarification_asked`, `planner_error`, `turn_finished`.
+`manual_edit`, `clarification_asked`, `planner_error`, `turn_finished`,
+`session_created` / `session_restored`.
+
+Every LLM invocation additionally emits a **`model_call`** observability
+event: the `model` name, the prompt by *reference* (`system_prompt_ref`
+as file + content hash, `table_context_sha1`, `history_turns`,
+`last_message_preview`), `input_tokens` / `output_tokens` /
+`total_tokens` from the API's usage metadata, `cost_usd` (computed from
+`GEMINI_PRICE_INPUT_PER_1M` / `GEMINI_PRICE_OUTPUT_PER_1M`, which default
+to 0 for the free tier), and `latency_ms`. A repair-loop retry produces
+its own `model_call`, so cost and latency per instruction are the sum of
+its attempts:
+
+```json
+{"ts": 1784409865.51, "event": "model_call", "session_id": "1fbf…",
+ "attempt": 0, "model": "gemini-3-flash-preview",
+ "system_prompt_ref": "prompts/system_prompt.md@60133c6d",
+ "table_context_sha1": "8da758731a18", "history_turns": 3,
+ "last_message_preview": "sort by stock ascending",
+ "input_tokens": 700, "output_tokens": 82, "total_tokens": 782,
+ "cost_usd": 0.0, "latency_ms": 1734.2}
+```
 
 ```bash
 python -m json.tool --json-lines traces/trace.jsonl | less
+```
+
+**When running under Docker Compose**, the app writes its trace inside
+the container (a named volume), so the `traces/trace.jsonl` in this repo
+is *not* updated by the containerized app — it only receives events from
+locally-run servers. To see the container's trace:
+
+```bash
+docker compose exec app tail -f traces/trace.jsonl    # watch live
+docker compose cp app:/app/traces/trace.jsonl traces/ # snapshot to host
 ```

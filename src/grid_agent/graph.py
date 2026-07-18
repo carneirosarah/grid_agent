@@ -40,7 +40,7 @@ is discussed in DECISIONS.md.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Literal, TypedDict
 
 from langgraph.graph import END, START, StateGraph
@@ -94,11 +94,15 @@ def build_graph(session: TableSession, planner: Planner, tracer: Tracer):
             })
         context = build_table_context(session.df)   # always the live table
         try:
-            reply = planner.plan(context, history)
+            reply, call = planner.plan(context, history)
         except PlannerError as exc:
             tracer.log("planner_error", error=str(exc))
             return {"wire_reply": None, "outcome": "error",
                     "message": f"The planning model is unavailable: {exc}"}
+        # Observability first (model, prompt refs, tokens, cost, latency),
+        # then the content the call produced.
+        tracer.log("model_call",
+                   attempt=state.get("attempts", 0), **asdict(call))
         tracer.log("llm_reply",
                    attempt=state.get("attempts", 0),
                    reply=reply.model_dump())
