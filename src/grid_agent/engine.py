@@ -176,6 +176,11 @@ class CellChange:
     new: object
 
 
+def _native(value: object) -> object:
+    """numpy scalar -> plain Python value (JSON-serialisable)."""
+    return value.item() if hasattr(value, "item") else value
+
+
 def diff_tables(before: pd.DataFrame, after: pd.DataFrame) -> tuple[list[CellChange], bool]:
     """Compare two table versions row-identity-wise (keyed on `sku`).
 
@@ -191,6 +196,7 @@ def diff_tables(before: pd.DataFrame, after: pd.DataFrame) -> tuple[list[CellCha
         unequal = old_vals != new_vals
         for sku in b.index[unequal]:
             changes.append(CellChange(sku=str(sku), column=col,
-                                      old=old_vals[sku], new=new_vals[sku]))
+                                      old=_native(old_vals[sku]),
+                                      new=_native(new_vals[sku])))
     order_changed = list(before["sku"]) != list(after["sku"])
     return changes, order_changed

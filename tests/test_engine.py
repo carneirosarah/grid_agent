@@ -139,6 +139,20 @@ def test_pure_sort_diff_reports_order_change_only(small_df):
     assert order_changed
 
 
+def test_diff_values_are_native_python_types(small_df):
+    """Regression: numpy scalars (e.g. numpy.bool) are not JSON-serialisable
+    and must never leak into CellChange old/new values."""
+    import json
+
+    plan = plan_of(UpdateWhere(
+        where=[Condition(column="rating", op="lt", value=2.0)],
+        column="flagged", action="set", value=True))
+    result = apply_plan(small_df, plan)
+    changes, _ = diff_tables(small_df, result.df)
+    assert changes and type(changes[0].new) is bool
+    json.dumps([c.__dict__ for c in changes])   # must not raise
+
+
 def test_determinism_same_plan_same_output(small_df):
     plan = plan_of(UpdateWhere(column="price", action="multiply", value=1.07),
                    Sort(keys=[SortKey(column="price")]))

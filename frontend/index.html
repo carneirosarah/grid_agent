@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>grid_agent — table editing agent</title>
+<style>
+  /* ---------- layout: two fixed panels ---------- */
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --border: #e2e5ea;
+    --text: #1c2330; --muted: #6b7280; --accent: #2563eb;
+    --add: #dcfce7; --add-border: #16a34a;
+    --user: #eef2ff; --agent: #f3f4f6; --warn: #fef3c7; --err: #fee2e2;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; height: 100vh; display: flex; flex-direction: column;
+    font: 14px/1.45 -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--text);
+  }
+  header {
+    padding: 10px 18px; background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 12px;
+  }
+  header h1 { font-size: 15px; margin: 0; }
+  header .hint { color: var(--muted); font-size: 12px; }
+  main { flex: 1; display: flex; min-height: 0; }
+
+  /* ---------- left panel: table ---------- */
+  #table-panel {
+    flex: 1.6; display: flex; flex-direction: column; min-width: 0;
+    border-right: 1px solid var(--border); background: var(--panel);
+  }
+  #table-toolbar {
+    padding: 8px 14px; display: flex; gap: 10px; align-items: center;
+    border-bottom: 1px solid var(--border); font-size: 12px; color: var(--muted);
+  }
+  #table-scroll { flex: 1; overflow: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  thead th {
+    position: sticky; top: 0; background: var(--panel); text-align: left;
+    padding: 7px 10px; border-bottom: 2px solid var(--border);
+    text-transform: uppercase; font-size: 11px; letter-spacing: .04em;
+    color: var(--muted); z-index: 1;
+  }
+  tbody td {
+    padding: 5px 10px; border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  tbody tr:hover { background: #fafbfc; }
+  td.changed {
+    background: var(--add); outline: 1px solid var(--add-border);
+    outline-offset: -1px; font-weight: 600;
+  }
+  td.changed .old {
+    color: var(--muted); font-weight: 400; text-decoration: line-through;
+    margin-right: 6px; font-size: 12px;
+  }
+  td.editable { cursor: text; }
+  td input {
+    width: 90px; font: inherit; padding: 2px 4px;
+    border: 1px solid var(--accent); border-radius: 3px;
+  }
+  .badge {
+    display: inline-block; padding: 1px 8px; border-radius: 10px;
+    font-size: 11px; font-weight: 600;
+  }
+  .badge.preview { background: var(--add); color: #14532d; }
+  .badge.order { background: var(--warn); color: #92400e; }
+
+  /* ---------- right panel: chat ---------- */
+  #chat-panel { flex: 1; display: flex; flex-direction: column; min-width: 340px; }
+  #messages { flex: 1; overflow-y: auto; padding: 14px; }
+  .msg {
+    max-width: 88%; margin-bottom: 10px; padding: 8px 12px;
+    border-radius: 10px; white-space: pre-wrap; word-wrap: break-word;
+  }
+  .msg.user   { background: var(--user); margin-left: auto; }
+  .msg.agent  { background: var(--agent); }
+  .msg.clarify{ background: var(--warn); }
+  .msg.error  { background: var(--err); }
+  .msg .who { font-size: 11px; color: var(--muted); margin-bottom: 2px; }
+
+  /* accept / reject bar shown while a preview is pending */
+  #verdict {
+    display: none; gap: 8px; padding: 10px 14px; align-items: center;
+    border-top: 1px solid var(--border); background: #f0fdf4;
+  }
+  #verdict.visible { display: flex; }
+  #verdict .summary { flex: 1; font-size: 12px; color: #14532d; }
+
+  #composer {
+    display: flex; gap: 8px; padding: 12px 14px;
+    border-top: 1px solid var(--border); background: var(--panel);
+  }
+  #composer input {
+    flex: 1; padding: 9px 12px; font: inherit;
+    border: 1px solid var(--border); border-radius: 8px;
+  }
+  #composer input:focus { outline: 2px solid var(--accent); border-color: transparent; }
+  button {
+    padding: 8px 14px; font: inherit; font-weight: 600; cursor: pointer;
+    border: 1px solid var(--border); border-radius: 8px; background: var(--panel);
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.accept  { background: #16a34a; border-color: #16a34a; color: #fff; }
+  button.reject  { background: #dc2626; border-color: #dc2626; color: #fff; }
+  button:disabled { opacity: .45; cursor: default; }
+  #spinner { display: none; color: var(--muted); font-size: 12px; padding: 0 14px 8px; }
+  #spinner.visible { display: block; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>grid_agent</h1>
+  <span class="hint">Ask the agent to edit the table — e.g.
+    “Increase electronics prices by 10%, then sort by price descending”.
+    Double-click a cell to edit it by hand.</span>
+</header>
+
+<main>
+  <!-- ============ LEFT: editable data table ============ -->
+  <section id="table-panel">
+    <div id="table-toolbar">
+      <span id="row-count"></span>
+      <span id="preview-badge" class="badge preview" hidden>PREVIEW — not applied</span>
+      <span id="order-badge" class="badge order" hidden>row order changed</span>
+      <span style="flex:1"></span>
+      <button id="undo-btn" title="Revert the last applied change">↩ Undo</button>
+    </div>
+    <div id="table-scroll"><table>
+      <thead id="thead"></thead>
+      <tbody id="tbody"></tbody>
+    </table></div>
+  </section>
+
+  <!-- ============ RIGHT: chat with the agent ============ -->
+  <section id="chat-panel">
+    <div id="messages"></div>
+    <div id="spinner">The agent is planning…</div>
+    <div id="verdict">
+      <span class="summary" id="verdict-summary"></span>
+      <button class="accept" id="accept-btn">Accept</button>
+      <button class="reject" id="reject-btn">Reject</button>
+    </div>
+    <form id="composer">
+      <input id="chat-input" placeholder="Tell the agent what to change…"
+             autocomplete="off" autofocus>
+      <button class="primary" id="send-btn" type="submit">Send</button>
+    </form>
+  </section>
+</main>
+
+<script>
+/* The frontend is intentionally dumb: all rules live in the backend. It
+   renders whatever GET /api/table says and POSTs user intent back. */
+
+const $ = id => document.getElementById(id);
+let table = null;          // last payload from the backend
+
+/* ---------- rendering ---------- */
+
+function render() {
+  const pending = table.pending;
+  // While a preview is pending we show the PREVIEW rows; otherwise the
+  // committed rows. A lookup of "sku|column" -> old value drives the
+  // green highlight + strikethrough of the previous value.
+  const rows = pending ? pending.preview_rows : table.rows;
+  const changed = new Map();
+  if (pending) pending.changes.forEach(c => changed.set(c.sku + "|" + c.column, c.old));
+
+  $("thead").innerHTML =
+    "<tr>" + table.columns.map(c => `<th>${c}</th>`).join("") + "</tr>";
+
+  $("tbody").innerHTML = rows.map(row =>
+    "<tr>" + table.columns.map(col => {
+      const key = row.sku + "|" + col;
+      const isChanged = changed.has(key);
+      const editable = !pending && col !== "sku";
+      const oldHtml = isChanged
+        ? `<span class="old">${escapeHtml(fmt(changed.get(key)))}</span>` : "";
+      return `<td class="${isChanged ? "changed" : ""} ${editable ? "editable" : ""}"
+                  data-sku="${row.sku}" data-col="${col}"
+                  title="${isChanged ? "was: " + fmt(changed.get(key)) : ""}">
+                ${oldHtml}${escapeHtml(fmt(row[col]))}</td>`;
+    }).join("") + "</tr>"
+  ).join("");
+
+  $("row-count").textContent = rows.length + " rows";
+  $("preview-badge").hidden = !pending;
+  $("order-badge").hidden = !(pending && pending.order_changed);
+  $("undo-btn").disabled = !table.can_undo;
+
+  $("verdict").classList.toggle("visible", !!pending);
+  if (pending) {
+    const cells = pending.changes.length;
+    $("verdict-summary").textContent =
+      `${pending.summary} — ${cells} cell(s) changed` +
+      (pending.order_changed ? ", rows reordered" : "");
+  }
+}
+
+const fmt = v => v === null || v === undefined ? ""
+  : typeof v === "number" && !Number.isInteger(v) ? v.toFixed(2) : String(v);
+const escapeHtml = s => s.replace(/[&<>"']/g,
+  ch => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch]));
+
+/* ---------- chat ---------- */
+
+function addMessage(text, cls) {
+  const who = cls === "user" ? "you" : "agent";
+  const div = document.createElement("div");
+  div.className = "msg " + cls;
+  div.innerHTML = `<div class="who">${who}</div>` + escapeHtml(text);
+  $("messages").appendChild(div);
+  $("messages").scrollTop = $("messages").scrollHeight;
+}
+
+$("composer").addEventListener("submit", async e => {
+  e.preventDefault();
+  const text = $("chat-input").value.trim();
+  if (!text) return;
+  $("chat-input").value = "";
+  addMessage(text, "user");
+  setBusy(true);
+  try {
+    const res = await api("POST", "/api/chat", { message: text });
+    table = res.table;
+    // outcome decides the bubble style: clarify = amber, error = red.
+    addMessage(res.message,
+               res.outcome === "clarify" ? "clarify"
+             : res.outcome === "error"   ? "error" : "agent");
+    render();
+  } catch (err) {
+    addMessage(err.message, "error");
+  } finally {
+    setBusy(false);
+  }
+});
+
+function setBusy(busy) {
+  $("spinner").classList.toggle("visible", busy);
+  $("send-btn").disabled = busy;
+}
+
+/* ---------- preview verdict + undo ---------- */
+
+$("accept-btn").onclick = () => tableAction("/api/pending/accept",
+  () => addMessage("Change applied. You can undo it with ↩.", "agent"));
+$("reject-btn").onclick = () => tableAction("/api/pending/reject",
+  () => addMessage("Preview rejected — the table was not modified.", "agent"));
+$("undo-btn").onclick = () => tableAction("/api/undo",
+  () => addMessage("Reverted the last applied change.", "agent"));
+
+async function tableAction(path, onDone) {
+  try {
+    table = await api("POST", path);
+    render();
+    onDone();
+  } catch (err) {
+    addMessage(err.message, "error");
+  }
+}
+
+/* ---------- manual cell editing (double-click) ---------- */
+
+$("tbody").addEventListener("dblclick", e => {
+  const td = e.target.closest("td.editable");
+  if (!td || td.querySelector("input")) return;
+  const original = td.textContent.trim();
+  td.innerHTML = `<input value="${escapeHtml(original)}">`;
+  const input = td.querySelector("input");
+  input.focus(); input.select();
+
+  const cancel = () => { td.textContent = original; };
+  input.addEventListener("keydown", async ev => {
+    if (ev.key === "Escape") cancel();
+    if (ev.key !== "Enter") return;
+    try {
+      table = await api("PATCH", "/api/cell", {
+        sku: td.dataset.sku, column: td.dataset.col, value: input.value.trim(),
+      });
+      render();
+    } catch (err) {
+      cancel();
+      addMessage(err.message, "error");
+    }
+  });
+  input.addEventListener("blur", cancel);
+});
+
+/* ---------- tiny fetch helper ---------- */
+
+async function api(method, path, body) {
+  const res = await fetch(path, {
+    method,
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.detail || res.statusText);
+  return data;
+}
+
+/* ---------- boot ---------- */
+
+(async () => {
+  table = await api("GET", "/api/table");
+  render();
+  addMessage("Hi! Tell me how to edit the table. I stage every change as a " +
+             "preview you can accept or reject, and applied changes can be " +
+             "undone.", "agent");
+})();
+</script>
+</body>
+</html>
