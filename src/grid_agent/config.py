@@ -11,9 +11,14 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-# Load `.env` from the project root (two levels up from this file:
-# src/grid_agent/config.py -> src -> project root).
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+# The root under which data/, frontend/ and traces/ live. Defaults to the
+# repo root (two levels up from this file: src/grid_agent/config.py ->
+# src -> root), which is correct for an editable install. When the package
+# is installed into site-packages — as in the Docker image — that guess
+# lands inside the interpreter tree, so the image sets GRID_AGENT_ROOT
+# explicitly.
+PROJECT_ROOT = Path(os.getenv("GRID_AGENT_ROOT")
+                    or Path(__file__).resolve().parents[2])
 load_dotenv(PROJECT_ROOT / ".env")
 
 # --- Data ------------------------------------------------------------------

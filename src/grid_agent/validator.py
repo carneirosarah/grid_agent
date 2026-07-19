@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
+from .dtypes import is_numeric_col, is_string_col
 from .schemas import Condition, Plan, Scalar, Sort, UpdateWhere
 
 # Row identity must survive every operation — the diff, undo and frontend
@@ -71,20 +72,12 @@ def _resolve_column(df: pd.DataFrame, name: str, errors: list[str],
     return None
 
 
-def _is_numeric(col: pd.Series) -> bool:
-    return pd.api.types.is_numeric_dtype(col) and not pd.api.types.is_bool_dtype(col)
-
-
-def _is_string(col: pd.Series) -> bool:
-    return pd.api.types.is_string_dtype(col) or col.dtype == object
-
-
 _TRUE = {"true", "yes", "1"}
 _FALSE = {"false", "no", "0"}
 
 
-def _coerce(value: Scalar, col: pd.Series, errors: list[str],
-            context: str) -> Scalar | None:
+def coerce_value(value: Scalar, col: pd.Series, errors: list[str],
+                 context: str) -> Scalar | None:
     """Coerce one wire value (usually a string) to the column's dtype.
     Returns the typed value, or None after recording an error."""
     text = str(value).strip()
@@ -149,13 +142,13 @@ def _validate_condition(df: pd.DataFrame, cond: Condition, errors: list[str],
     col = df[column]
 
     # Ordering comparisons only make sense on numeric columns here.
-    if cond.op in ("gt", "gte", "lt", "lte") and not _is_numeric(col):
+    if cond.op in ("gt", "gte", "lt", "lte") and not is_numeric_col(col):
         errors.append(f"{context}: operator '{cond.op}' requires a numeric "
                       f"column, but '{column}' is not numeric.")
         return None
 
     if cond.op == "contains":
-        if not _is_string(col):
+        if not is_string_col(col):
             errors.append(f"{context}: 'contains' only works on text columns, "
                           f"and '{column}' is not text.")
             return None
@@ -166,19 +159,19 @@ def _validate_condition(df: pd.DataFrame, cond: Condition, errors: list[str],
         raw = cond.value if isinstance(cond.value, list) else [cond.value]
         coerced: list[Scalar] = []
         for v in raw:
-            typed = _coerce(v, col, errors, context)
+            typed = coerce_value(v, col, errors, context)
             if typed is None:
                 return None
-            if _is_string(col):
+            if is_string_col(col):
                 _check_value_exists(str(typed), col, errors, context)
             coerced.append(typed)
         return Condition(column=column, op="in", value=coerced)
 
     # eq / neq / ordering: single scalar, coerced to dtype.
-    typed = _coerce(cond.value, col, errors, context)  # type: ignore[arg-type]
+    typed = coerce_value(cond.value, col, errors, context)  # type: ignore[arg-type]
     if typed is None:
         return None
-    if cond.op == "eq" and _is_string(col):
+    if cond.op == "eq" and is_string_col(col):
         _check_value_exists(str(typed), col, errors, context)
     return Condition(column=column, op=cond.op, value=typed)
 
@@ -196,7 +189,7 @@ def _validate_update(df: pd.DataFrame, op: UpdateWhere, index: int,
     col = df[column]
 
     if op.action in ("multiply", "increment"):
-        if not _is_numeric(col):
+        if not is_numeric_col(col):
             errors.append(f"{context}: action '{op.action}' requires a numeric "
                           f"column, but '{column}' is not numeric.")
             return None
@@ -207,7 +200,7 @@ def _validate_update(df: pd.DataFrame, op: UpdateWhere, index: int,
                           f"value, got '{op.value}'.")
             return None
     else:  # set
-        maybe = _coerce(op.value, col, errors, f"{context}.value")
+        maybe = coerce_value(op.value, col, errors, f"{context}.value")
         if maybe is None:
             return None
         value = maybe

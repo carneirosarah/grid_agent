@@ -33,8 +33,8 @@ from __future__ import annotations
 
 import threading
 from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable
 
 import pandas as pd
 
@@ -42,7 +42,6 @@ from .config import SESSION_CACHE_LIMIT
 from .persistence import SessionRepository, SessionSnapshot, df_to_doc, doc_to_df
 from .state import TableSession
 from .trace import NullTracer, Tracer
-
 
 # --- TableSession <-> SessionSnapshot ---------------------------------------
 

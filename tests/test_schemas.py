@@ -19,7 +19,6 @@ from grid_agent.schemas import (
     wire_to_plan,
 )
 
-
 # --- Domain models ---------------------------------------------------------
 
 def test_update_where_roundtrip():

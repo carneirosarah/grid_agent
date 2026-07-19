@@ -9,7 +9,6 @@ itself is exercised by `test_persistence_pg.py` (skipped without a DB).
 import threading
 
 import pandas as pd
-import pytest
 
 from grid_agent.persistence import InMemorySessionRepository
 from grid_agent.schemas import Condition, Plan, Sort, SortKey, UpdateWhere

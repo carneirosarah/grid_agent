@@ -5,4 +5,4 @@ The agent never regenerates table contents. It emits *structured operations*
 DataFrame. Pending plans are previewed, and applied plans can be undone.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

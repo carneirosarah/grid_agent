@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
+from .dtypes import is_string_col
 from .schemas import Condition, Plan, Sort, UpdateWhere
 
 
@@ -81,7 +82,7 @@ def build_mask(df: pd.DataFrame, conditions: list[Condition]) -> pd.Series:
                                                  regex=False, na=False)
         elif cond.op == "in":
             values = cond.value if isinstance(cond.value, list) else [cond.value]
-            if _is_string(col):  # string column: compare lowercased
+            if is_string_col(col):  # string column: compare lowercased
                 lowered = {str(v).lower() for v in values}
                 mask &= col.astype(str).str.lower().isin(lowered)
             else:
@@ -91,15 +92,9 @@ def build_mask(df: pd.DataFrame, conditions: list[Condition]) -> pd.Series:
     return mask
 
 
-def _is_string(col: pd.Series) -> bool:
-    """True for string columns across pandas versions (pandas 3 uses the
-    Arrow-backed `str` dtype, older versions use `object`)."""
-    return pd.api.types.is_string_dtype(col) or col.dtype == object
-
-
 def _eq(col: pd.Series, value) -> pd.Series:
     """Equality that is case-insensitive for string columns."""
-    if _is_string(col) and isinstance(value, str):
+    if is_string_col(col) and isinstance(value, str):
         return col.astype(str).str.lower() == value.lower()
     return col == value
 
@@ -112,14 +107,25 @@ def apply_update_where(df: pd.DataFrame, op: UpdateWhere) -> tuple[pd.DataFrame,
     """Apply one update_where. Returns (new_df, stats)."""
     mask = build_mask(df, op.where)
     out = df.copy()
+    original_dtype = df[op.column].dtype
     before = out.loc[mask, op.column].copy()
 
     if op.action == "set":
         out.loc[mask, op.column] = op.value
-    elif op.action == "multiply":
-        out.loc[mask, op.column] = (out.loc[mask, op.column] * op.value).round(2)
-    elif op.action == "increment":
-        out.loc[mask, op.column] = out.loc[mask, op.column] + op.value
+    elif op.action in ("multiply", "increment"):
+        # Arithmetic on an integer column (e.g. "increase stock by 10%")
+        # needs a float detour — pandas refuses to place floats into an
+        # int column — but must come back to whole units afterwards: the
+        # user's quantity column shouldn't silently become 220.00000003.
+        was_integer = pd.api.types.is_integer_dtype(original_dtype)
+        if was_integer:
+            out[op.column] = out[op.column].astype("float64")
+        if op.action == "multiply":
+            out.loc[mask, op.column] = (out.loc[mask, op.column] * op.value).round(2)
+        else:
+            out.loc[mask, op.column] = out.loc[mask, op.column] + op.value
+        if was_integer:
+            out[op.column] = out[op.column].round().astype(original_dtype)
     else:  # pragma: no cover — schema forbids other actions
         raise EngineError(f"Unsupported action: {op.action}")
 

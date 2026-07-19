@@ -75,6 +75,15 @@ def test_input_dataframe_is_never_mutated(small_df):
     pd.testing.assert_frame_equal(small_df, original)
 
 
+def test_multiply_preserves_integer_dtype(small_df):
+    """'Increase stock by 10%' must keep the stock column integer —
+    quantities don't become 220.00000000000003 units."""
+    plan = plan_of(UpdateWhere(column="stock", action="multiply", value=1.1))
+    result = apply_plan(small_df, plan)
+    assert pd.api.types.is_integer_dtype(result.df["stock"])
+    assert result.df.loc[2, "stock"] == 220          # round(200 * 1.1)
+
+
 def test_noop_set_counts_zero_changed_cells(small_df):
     plan = plan_of(UpdateWhere(column="flagged", action="set", value=False))
     result = apply_plan(small_df, plan)

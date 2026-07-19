@@ -32,6 +32,7 @@ from __future__ import annotations
 import json
 import uuid
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
@@ -80,6 +81,13 @@ class CellEditRequest(BaseModel):
     value: str = Field(description="New value as text; it is coerced to the "
                        "column's type and rejected if incompatible.",
                        examples=["199.90"])
+
+
+@dataclass
+class SessionRef:
+    """The calling user's session, resolved from the request cookie."""
+    id: str
+    entry: SessionEntry
 
 
 # --- serialisation helpers --------------------------------------------------
@@ -159,7 +167,7 @@ def create_app(store: SessionStore | None = None,
         return shared["planner"]
 
     # -- per-request session resolution (cookie -> SessionEntry) ------------
-    def request_session(request: Request, response: Response) -> tuple[str, SessionEntry]:
+    def request_session(request: Request, response: Response) -> SessionRef:
         """FastAPI dependency: resolve (or mint) the caller's session id
         and return its store entry. The cookie is httponly and lax — the
         id is an opaque capability, never rendered into any page."""
@@ -168,7 +176,7 @@ def create_app(store: SessionStore | None = None,
             session_id = uuid.uuid4().hex
             response.set_cookie(SESSION_COOKIE, session_id,
                                 httponly=True, samesite="lax")
-        return session_id, store.entry(session_id)
+        return SessionRef(id=session_id, entry=store.entry(session_id))
 
     # -- frontend -----------------------------------------------------------
     @app.get("/", include_in_schema=False)
@@ -178,7 +186,7 @@ def create_app(store: SessionStore | None = None,
     # -- table state --------------------------------------------------------
     @app.get("/api/table", tags=["table"],
              summary="Current table state (committed + pending preview)")
-    def get_table(sid_entry=Depends(request_session)) -> dict:
+    def get_table(ref: SessionRef = Depends(request_session)) -> dict:
         """Return everything the frontend needs to render both panels
         **for the calling user's session** (sessions are isolated per
         `grid_session` cookie):
@@ -190,9 +198,8 @@ def create_app(store: SessionStore | None = None,
           `order_changed`, per-operation `op_results`, and a `summary`.
         - **can_undo** — whether an undo snapshot exists.
         """
-        _, entry = sid_entry
-        with entry.lock:
-            return table_payload(entry)
+        with ref.entry.lock:
+            return table_payload(ref.entry)
 
     # -- chat: one agent turn ------------------------------------------------
     @app.post("/api/chat", tags=["agent"],
@@ -202,7 +209,7 @@ def create_app(store: SessionStore | None = None,
                   503: {"description": "Gemini is unreachable or "
                         "GEMINI_API_KEY is not configured."},
               })
-    def chat(body: ChatRequest, sid_entry=Depends(request_session)) -> dict:
+    def chat(body: ChatRequest, ref: SessionRef = Depends(request_session)) -> dict:
         """Run one full agent turn (LangGraph: plan → validate → repair →
         preview) against the calling user's session and return:
 
@@ -225,65 +232,61 @@ def create_app(store: SessionStore | None = None,
             planner_impl = get_planner()
         except PlannerError as exc:                 # missing/invalid key
             raise HTTPException(503, str(exc)) from exc
-        session_id, entry = sid_entry
-        with entry.lock:
-            result = run_turn(entry.session, planner_impl,
-                              entry.session.tracer, text)
-            store.persist(session_id)               # chat history is durable
+        with ref.entry.lock:
+            session = ref.entry.session
+            result = run_turn(session, planner_impl, session.tracer, text)
+            store.persist(ref.id)                   # chat history is durable
             return {"outcome": result.outcome, "message": result.message,
-                    "table": table_payload(entry)}
+                    "table": table_payload(ref.entry)}
 
     # -- preview lifecycle ---------------------------------------------------
     @app.post("/api/pending/accept", tags=["lifecycle"],
               summary="Accept the pending preview",
               responses={409: {"description": "No pending change exists."}})
-    def accept(sid_entry=Depends(request_session)) -> dict:
+    def accept(ref: SessionRef = Depends(request_session)) -> dict:
         """Commit the staged preview to the table. The previous table
         version is pushed onto the undo stack first, so the change can be
         reverted with `POST /api/undo`. Under concurrent double-submission
         the session lock guarantees exactly one accept succeeds; the other
         receives 409. Returns the fresh table payload."""
-        session_id, entry = sid_entry
-        with entry.lock:
+        with ref.entry.lock:
             try:
-                entry.session.accept()
+                ref.entry.session.accept()
             except StateError as exc:
                 raise HTTPException(409, str(exc)) from exc
-            store.persist(session_id)
-            return table_payload(entry)
+            store.persist(ref.id)
+            return table_payload(ref.entry)
 
     @app.post("/api/pending/reject", tags=["lifecycle"],
               summary="Reject the pending preview",
               responses={409: {"description": "No pending change exists."}})
-    def reject(sid_entry=Depends(request_session)) -> dict:
+    def reject(ref: SessionRef = Depends(request_session)) -> dict:
         """Discard the staged preview. The committed table is untouched and
         nothing is added to the undo stack. Returns the fresh table payload."""
-        _, entry = sid_entry
-        with entry.lock:
+        with ref.entry.lock:
             try:
-                entry.session.reject()
+                ref.entry.session.reject()
             except StateError as exc:
                 raise HTTPException(409, str(exc)) from exc
-            return table_payload(entry)
+            return table_payload(ref.entry)
 
     @app.post("/api/undo", tags=["lifecycle"],
               summary="Undo the most recent applied change",
               responses={409: {"description": "The undo stack is empty."}})
-    def undo(sid_entry=Depends(request_session)) -> dict:
+    def undo(ref: SessionRef = Depends(request_session)) -> dict:
         """Restore the table to its state before the last applied change
         (accepted plan **or** manual cell edit). Any pending preview is
         dropped, since it was computed against the replaced table. Undo is
         stacked: repeated calls step further back, up to the configured
         snapshot limit — and the stack survives server restarts, since it
         is persisted with the session. Returns the fresh table payload."""
-        session_id, entry = sid_entry
-        with entry.lock:
+        with ref.entry.lock:
             try:
-                entry.session.undo()
+                ref.entry.session.undo()
             except StateError as exc:
                 raise HTTPException(409, str(exc)) from exc
-            store.persist(session_id)
-            return table_payload(entry)
+            store.persist(ref.id)
+            return table_payload(ref.entry)
 
     # -- manual cell edits ---------------------------------------------------
     @app.patch("/api/cell", tags=["editing"],
@@ -292,20 +295,19 @@ def create_app(store: SessionStore | None = None,
                                 "protected column, or value of the wrong "
                                 "type."}})
     def edit_cell(body: CellEditRequest,
-                  sid_entry=Depends(request_session)) -> dict:
+                  ref: SessionRef = Depends(request_session)) -> dict:
         """Apply a hand edit from the grid, bypassing the agent but **not**
         the rules: the value is coerced with the same type rules as agent
         plans, `sku` stays read-only, and the edit is undoable. A pending
         preview, if any, is invalidated (it described a table that no
         longer exists). Returns the fresh table payload."""
-        session_id, entry = sid_entry
-        with entry.lock:
+        with ref.entry.lock:
             try:
-                entry.session.edit_cell(body.sku, body.column, body.value)
+                ref.entry.session.edit_cell(body.sku, body.column, body.value)
             except StateError as exc:
                 raise HTTPException(400, str(exc)) from exc
-            store.persist(session_id)
-            return table_payload(entry)
+            store.persist(ref.id)
+            return table_payload(ref.entry)
 
     return app
 
@@ -314,5 +316,5 @@ def create_app(store: SessionStore | None = None,
 if not Path(DATASET_PATH).exists():                 # pragma: no cover
     raise RuntimeError(
         f"Dataset not found at {DATASET_PATH}. "
-        "Run `python scripts/generate_data.py` first.")
+        "Run `python -m grid_agent.datagen` first.")
 app = create_app()

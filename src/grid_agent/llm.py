@@ -132,7 +132,6 @@ class GeminiPlanner:
                 "add your key (https://aistudio.google.com/apikey).")
         # Imported lazily so offline tests never touch the SDK.
         from google import genai
-        self._genai = genai
         self._client = genai.Client(api_key=api_key)
         self._model = model
 

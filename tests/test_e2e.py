@@ -194,16 +194,9 @@ def test_full_turn_is_persisted_to_jsonl(tmp_path, small_df):
 # --- real generated dataset -------------------------------------------------
 
 def test_pipeline_on_full_350_row_dataset():
-    import importlib.util
-    from pathlib import Path
+    from grid_agent.datagen import generate
 
-    spec = importlib.util.spec_from_file_location(
-        "generate_data",
-        Path(__file__).resolve().parents[1] / "scripts" / "generate_data.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-
-    session = TableSession(df=module.generate())
+    session = TableSession(df=generate())
     result = run_turn(session, FakePlanner(GOOD_PLAN), NullTracer(),
                       "electronics +10%, sort by price desc")
     assert result.outcome == "preview"

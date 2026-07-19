@@ -34,7 +34,7 @@ from .config import DATASET_PATH, UNDO_STACK_LIMIT
 from .engine import CellChange, OpResult, apply_plan, diff_tables
 from .schemas import Plan
 from .trace import NullTracer, Tracer
-from .validator import PROTECTED_COLUMNS, _coerce
+from .validator import PROTECTED_COLUMNS, coerce_value
 
 
 class StateError(RuntimeError):
@@ -69,7 +69,7 @@ class TableSession:
     # -- construction -------------------------------------------------------
 
     @classmethod
-    def from_csv(cls, path=DATASET_PATH, tracer: Tracer | None = None) -> "TableSession":
+    def from_csv(cls, path=DATASET_PATH, tracer: Tracer | None = None) -> TableSession:
         df = pd.read_csv(path)
         return cls(df=df, tracer=tracer or NullTracer())
 
@@ -143,7 +143,7 @@ class TableSession:
             raise StateError(f"Unknown row '{sku}'.")
 
         errors: list[str] = []
-        typed = _coerce(value, self.df[column], errors, f"cell {sku}.{column}")  # type: ignore[arg-type]
+        typed = coerce_value(value, self.df[column], errors, f"cell {sku}.{column}")  # type: ignore[arg-type]
         if errors:
             raise StateError(errors[0])
 

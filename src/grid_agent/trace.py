@@ -39,7 +39,7 @@ class Tracer:
             with self.path.open("a", encoding="utf-8") as f:
                 f.write(line + "\n")
 
-    def bind(self, **fields: object) -> "BoundTracer":
+    def bind(self, **fields: object) -> BoundTracer:
         """Return a view of this tracer that stamps `fields` (e.g. the
         session_id) onto every event — one trace file stays shared across
         all users, but each line is attributable to its session."""
@@ -57,7 +57,7 @@ class BoundTracer(Tracer):
     def log(self, event: str, **payload: object) -> None:
         self._inner.log(event, **self._fields, **payload)
 
-    def bind(self, **fields: object) -> "BoundTracer":
+    def bind(self, **fields: object) -> BoundTracer:
         return BoundTracer(self._inner, {**self._fields, **fields})
 
 

@@ -9,7 +9,7 @@ never writes table contents directly. Every change is staged as a
 every event is persisted to a **`.jsonl` trace**.
 
 Built with Python, **LangGraph**, and the **Gemini** API (structured
-output). The original brief is preserved in [initial_prompt.md](docs/initial_prompt.md);
+output). The original brief is preserved in [initial_prompt.md](sessions/initial_prompt.md);
 design decisions and suggested improvements are in
 [docs/DECISIONS.md](docs/DECISIONS.md).
 
@@ -106,12 +106,12 @@ docker compose down -v             # ALSO wipe sessions + trace volumes
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+pip install -e ".[dev]"
 
 cp .env.example .env            # add your Gemini key
 
-python scripts/generate_data.py # writes data/inventory.csv (350 x 9)
-uvicorn grid_agent.api:app --app-dir src --port 8000
+python -m grid_agent.datagen    # writes data/inventory.csv (350 x 9)
+uvicorn grid_agent.api:app --port 8000
 ```
 
 Without `DATABASE_URL`, sessions live in process memory (still per-user,
@@ -121,7 +121,7 @@ database and point the local server at it:
 ```bash
 docker compose up -d db
 DATABASE_URL=postgresql://grid:grid@localhost:5433/grid_agent \
-    uvicorn grid_agent.api:app --app-dir src --port 8000
+    uvicorn grid_agent.api:app --port 8000
 ```
 
 ## Tests
@@ -130,7 +130,7 @@ No API key or database needed (the live-Gemini and Postgres tests
 auto-skip when their credentials are absent):
 
 ```bash
-pytest            # 86 tests
+pytest            # 90 tests
 ```
 
 ## Architecture
@@ -178,36 +178,38 @@ it never guesses, and invalid plans never reach the engine.
 ## Project layout
 
 ```
-scripts/generate_data.py     Step 1  — dataset generator (seeded)
+pyproject.toml                packaging, dependencies, pytest/ruff config
 src/grid_agent/
-  config.py                  paths, model name, limits (.env loaded here)
-  schemas.py                 Step 2  — wire + domain operation models
-  engine.py                  Step 4  — deterministic apply + diff
-  validator.py               Step 5  — semantic validation & coercion
-  state.py                   Step 6  — session, preview, undo
-  sessions.py                per-user session store (locks, LRU, persist)
-  persistence.py             PostgreSQL / in-memory session repositories
-  trace.py                   .jsonl event log (session-stamped events)
-  llm.py                     Step 7  — Gemini structured-output planner
-  prompts/system_prompt.md   the agent's behavioural rules
-  graph.py                   Step 8  — LangGraph plan→validate→preview
-  api.py                     Step 10 — FastAPI (self-documented at /docs)
-frontend/index.html          Step 11 — two-panel UI (vanilla JS)
-tests/                       Steps 3, 9 + unit tests for every module
-data/inventory.csv           generated dataset (git-ignored)
-traces/trace.jsonl           persisted trace (git-ignored)
+  config.py                   paths, model name, limits (.env loaded here)
+  datagen.py                  Step 1  — dataset generator (seeded)
+  schemas.py                  Step 2  — wire + domain operation models
+  dtypes.py                   shared column-dtype predicates
+  engine.py                   Step 4  — deterministic apply + diff
+  validator.py                Step 5  — semantic validation & coercion
+  state.py                    Step 6  — session, preview, undo
+  sessions.py                 per-user session store (locks, LRU, persist)
+  persistence.py              PostgreSQL / in-memory session repositories
+  trace.py                    .jsonl event log (session-stamped events)
+  llm.py                      Step 7  — Gemini structured-output planner
+  prompts/system_prompt.md    the agent's behavioural rules
+  graph.py                    Step 8  — LangGraph plan→validate→preview
+  api.py                      Step 10 — FastAPI (self-documented at /docs)
+frontend/index.html           Step 11 — two-panel UI (vanilla JS)
+tests/                        Steps 3, 9 + unit tests for every module
+data/inventory.csv            generated dataset (git-ignored)
+traces/trace.jsonl            persisted trace (git-ignored)
 Dockerfile, docker-compose.yml   app container + PostgreSQL
 ```
 
 ## The 11 steps, and how to test each
 
-### 1. Data generation — [scripts/generate_data.py](scripts/generate_data.py)
+### 1. Data generation — [src/grid_agent/datagen.py](src/grid_agent/datagen.py)
 350 rows × 9 columns of product inventory (`sku`, `name`, `category`,
 `supplier`, `price`, `cost`, `stock`, `rating`, `flagged`). Seeded RNG:
 every run reproduces the identical file.
 
 ```bash
-python scripts/generate_data.py           # prints shape + head
+python -m grid_agent.datagen              # prints shape + head
 ```
 
 ### 2. Operations — [src/grid_agent/schemas.py](src/grid_agent/schemas.py)
@@ -286,7 +288,7 @@ for offline HTTP tests.
 
 ```bash
 pytest tests/test_api.py -v
-uvicorn grid_agent.api:app --app-dir src --port 8000
+uvicorn grid_agent.api:app --port 8000
 curl -s localhost:8000/api/table | head -c 300
 ```
 

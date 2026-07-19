@@ -17,8 +17,9 @@ Columns
 - flagged   : boolean marker the agent can set via `update_where`
               (e.g. "flag every low-margin row")
 
-Run:
-    python scripts/generate_data.py
+Run either of:
+    python -m grid_agent.datagen
+    grid-agent-generate                # console script (installed package)
 
 The generator is seeded (see config.DATASET_SEED) so every run reproduces
 the exact same file — important for reproducible tests and traces.
@@ -26,16 +27,10 @@ the exact same file — important for reproducible tests and traces.
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import numpy as np
 import pandas as pd
 
-# Allow running as a plain script: put `src/` on the path.
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-
-from grid_agent.config import DATASET_PATH, DATASET_ROWS, DATASET_SEED
+from .config import DATASET_PATH, DATASET_ROWS, DATASET_SEED
 
 # Vocabulary used to compose realistic-looking product names per category.
 CATEGORIES: dict[str, list[str]] = {

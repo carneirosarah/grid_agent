@@ -122,14 +122,13 @@ def build_graph(session: TableSession, planner: Planner, tracer: Tracer):
         structural_plan, errors = wire_to_plan(reply)
         if not errors:
             result = validate_plan(session.df, structural_plan)
+            if result.ok:
+                tracer.log("plan_validated", plan=result.plan.model_dump())
+                return {"plan": result.plan, "errors": []}
             errors = result.errors
-        if errors:
-            tracer.log("validation_failed",
-                       attempt=state["attempts"], errors=errors)
-            return {"errors": errors, "plan": None}
-
-        tracer.log("plan_validated", plan=result.plan.model_dump())
-        return {"plan": result.plan, "errors": []}
+        tracer.log("validation_failed",
+                   attempt=state["attempts"], errors=errors)
+        return {"errors": errors, "plan": None}
 
     # -- node: preview ------------------------------------------------------
     def preview_node(state: AgentState) -> AgentState:

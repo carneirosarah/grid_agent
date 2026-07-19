@@ -28,12 +28,12 @@ Only two operations exist by design (per the assignment):
 
 from __future__ import annotations
 
-from typing import Annotated, Literal, Union
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
 # Scalar type a condition/update value may take *after* semantic coercion.
-Scalar = Union[str, float, int, bool]
+Scalar = str | float | int | bool
 
 # Comparison operators supported by `update_where` conditions.
 ConditionOp = Literal["eq", "neq", "gt", "gte", "lt", "lte", "contains", "in"]
@@ -54,7 +54,7 @@ class Condition(BaseModel):
     column: str
     op: ConditionOp
     # `in` takes a list; every other operator takes a single scalar.
-    value: Union[Scalar, list[Scalar]]
+    value: Scalar | list[Scalar]
 
 
 class UpdateWhere(BaseModel):
@@ -78,7 +78,7 @@ class Sort(BaseModel):
 
 
 # Discriminated union: pydantic picks the right model from `kind`.
-Operation = Annotated[Union[UpdateWhere, Sort], Field(discriminator="kind")]
+Operation = Annotated[UpdateWhere | Sort, Field(discriminator="kind")]
 
 
 class Plan(BaseModel):

@@ -25,7 +25,6 @@ from grid_agent.llm import (
 )
 from grid_agent.schemas import WireReply
 
-
 # --- system prompt ---------------------------------------------------------
 
 def test_system_prompt_loaded_from_markdown_file():
