@@ -130,7 +130,7 @@ No API key or database needed (the live-Gemini and Postgres tests
 auto-skip when their credentials are absent):
 
 ```bash
-pytest            # 90 tests
+pytest            # 100 tests
 ```
 
 ## Architecture
@@ -190,6 +190,7 @@ src/grid_agent/
   sessions.py                 per-user session store (locks, LRU, persist)
   persistence.py              PostgreSQL / in-memory session repositories
   trace.py                    .jsonl event log (session-stamped events)
+  metrics.py                  Structured Output Validity Rate counter
   llm.py                      Step 7  — Gemini structured-output planner
   prompts/system_prompt.md    the agent's behavioural rules
   graph.py                    Step 8  — LangGraph plan→validate→preview
@@ -380,3 +381,23 @@ locally-run servers. To see the container's trace:
 docker compose exec app tail -f traces/trace.jsonl    # watch live
 docker compose cp app:/app/traces/trace.jsonl traces/ # snapshot to host
 ```
+
+## Metrics (`GET /api/metrics`)
+
+**Structured Output Validity Rate** — the percentage of raw LLM responses
+Pydantic accepted as a `WireReply`, i.e. how often the first of the three
+walls (schema-constrained decoding) holds. Counted at the only place that
+boundary exists ([llm.py](src/grid_agent/llm.py), tallied by
+[metrics.py](src/grid_agent/metrics.py)); a reply parsed from raw-text
+fallback still counts as accepted, and transport failures are excluded —
+no response existed, so validity was never in question.
+
+```bash
+curl -s localhost:8000/api/metrics
+# {"llm_responses": 12, "accepted": 11, "rejected": 1, "validity_pct": 91.67}
+```
+
+`validity_pct` is `null` until the first response is judged (0/0 is "no
+data yet", not 0%). Counters are per-process and reset on restart; the
+durable per-call equivalents in the trace are `llm_reply` (accepted) and
+`planner_error` events mentioning "unparseable" (rejected).

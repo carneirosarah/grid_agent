@@ -36,6 +36,7 @@ from .config import (
     GEMINI_PRICE_INPUT_PER_1M,
     GEMINI_PRICE_OUTPUT_PER_1M,
 )
+from .metrics import ValidityCounter
 from .schemas import WireReply
 
 # Behavioural rules for the model, versioned as a standalone Markdown file.
@@ -125,7 +126,8 @@ def build_table_context(df: pd.DataFrame) -> str:
 class GeminiPlanner:
     """Planner backed by the google-genai SDK with structured output."""
 
-    def __init__(self, api_key: str = GEMINI_API_KEY, model: str = GEMINI_MODEL):
+    def __init__(self, api_key: str = GEMINI_API_KEY, model: str = GEMINI_MODEL,
+                 validity: ValidityCounter | None = None):
         if not api_key:
             raise PlannerError(
                 "GEMINI_API_KEY is not set. Copy .env.example to .env and "
@@ -134,6 +136,9 @@ class GeminiPlanner:
         from google import genai
         self._client = genai.Client(api_key=api_key)
         self._model = model
+        # Structured Output Validity Rate tally (see metrics.py for the
+        # counting rules); exposed by the API at GET /api/metrics.
+        self.validity = validity or ValidityCounter()
 
     def plan(self, table_context: str,
              history: list[dict[str, str]]) -> tuple[WireReply, ModelCall]:
@@ -192,11 +197,19 @@ class GeminiPlanner:
         # 4. Normalise the result: parsed WireReply out, PlannerError
         #    otherwise — callers never see a half-parsed reply. The SDK
         #    usually fills `.parsed`; fall back to parsing the raw text.
+        #    Either way the verdict feeds the Structured Output Validity
+        #    Rate — a response reached this point, so Pydantic gets to
+        #    judge it (transport failures above are deliberately not
+        #    counted: there was no response to judge).
         reply = getattr(response, "parsed", None)
         if isinstance(reply, WireReply):
+            self.validity.record(True)
             return reply, call
         try:
-            return WireReply.model_validate_json(response.text or ""), call
+            reply = WireReply.model_validate_json(response.text or "")
         except Exception as exc:
+            self.validity.record(False)
             raise PlannerError(
                 f"Gemini returned an unparseable reply: {response.text!r}") from exc
+        self.validity.record(True)
+        return reply, call

@@ -129,12 +129,41 @@ def test_concurrent_double_accept_commits_exactly_once(small_df):
     assert row["price"] == 27.5          # applied once: 25.0 * 1.1
 
 
+def test_metrics_endpoint_reports_validity_rate(small_df):
+    """GET /api/metrics surfaces the planner's ValidityCounter."""
+    from grid_agent.metrics import ValidityCounter
+
+    planner = FakePlanner(GOOD_PLAN)
+    planner.validity = ValidityCounter()        # as GeminiPlanner carries
+    store = SessionStore(df_factory=lambda: small_df.copy(),
+                         repository=InMemorySessionRepository(),
+                         tracer=NullTracer())
+    client = TestClient(create_app(store=store, planner=planner,
+                                   tracer=NullTracer()))
+
+    # No LLM responses yet: null rate, not 0%.
+    assert client.get("/api/metrics").json() == {
+        "llm_responses": 0, "accepted": 0, "rejected": 0,
+        "validity_pct": None}
+
+    planner.validity.record(True)
+    planner.validity.record(False)
+    assert client.get("/api/metrics").json()["validity_pct"] == 50.0
+
+
+def test_metrics_endpoint_works_without_a_counter(client):
+    """A planner with no counter (or none created yet) yields the empty
+    shape — the endpoint must never 500 over observability."""
+    assert client.get("/api/metrics").json()["llm_responses"] == 0
+
+
 def test_openapi_documents_all_endpoints(client):
     """The Swagger doc (/docs) must cover the whole API surface."""
     spec = client.get("/openapi.json").json()
     paths = spec["paths"]
     for route in ["/api/table", "/api/chat", "/api/pending/accept",
-                  "/api/pending/reject", "/api/undo", "/api/cell"]:
+                  "/api/pending/reject", "/api/undo", "/api/cell",
+                  "/api/metrics"]:
         assert route in paths
     # Spot-check: summaries and rich descriptions made it into the spec.
     chat = paths["/api/chat"]["post"]

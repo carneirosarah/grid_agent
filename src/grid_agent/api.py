@@ -43,6 +43,7 @@ from pydantic import BaseModel, Field
 from .config import DATASET_PATH, PROJECT_ROOT, SESSION_COOKIE
 from .graph import run_turn
 from .llm import GeminiPlanner, Planner, PlannerError
+from .metrics import ValidityCounter
 from .persistence import make_repository
 from .sessions import SessionEntry, SessionStore
 from .state import PendingChange, StateError
@@ -61,6 +62,9 @@ OPENAPI_TAGS = [
      "pending preview, plus undo of applied changes."},
     {"name": "editing", "description": "Direct (non-agent) cell edits made "
      "in the grid."},
+    {"name": "observability", "description": "Runtime quality metrics for "
+     "the LLM integration. Per-process counters; the durable per-call "
+     "record is the `.jsonl` trace."},
 ]
 
 
@@ -200,6 +204,31 @@ def create_app(store: SessionStore | None = None,
         """
         with ref.entry.lock:
             return table_payload(ref.entry)
+
+    # -- observability -------------------------------------------------------
+    @app.get("/api/metrics", tags=["observability"],
+             summary="Structured Output Validity Rate")
+    def get_metrics() -> dict:
+        """**Structured Output Validity Rate** — the percentage of raw LLM
+        responses that Pydantic accepted as a `WireReply` (the wire schema
+        the model is constrained to). Server-wide, across all sessions.
+
+        - **llm_responses** — responses judged so far (accepted + rejected).
+        - **accepted** — parsed into a `WireReply`, via the SDK's parsed
+          field or the raw-text fallback.
+        - **rejected** — a response arrived but Pydantic could not parse
+          it. Transport failures (network/auth/quota) are *not* counted:
+          no response existed, so validity was never in question.
+        - **validity_pct** — `100 * accepted / llm_responses`, rounded to
+          2 decimals; `null` until the first response is judged.
+
+        Counters are per-process and reset on restart. For durable
+        per-call records, see the trace: `llm_reply` events are accepted
+        responses; `planner_error` events with an "unparseable" message
+        are rejected ones.
+        """
+        counter = getattr(shared["planner"], "validity", None)
+        return counter.snapshot() if counter else ValidityCounter().snapshot()
 
     # -- chat: one agent turn ------------------------------------------------
     @app.post("/api/chat", tags=["agent"],
