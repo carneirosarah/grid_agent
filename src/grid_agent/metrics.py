@@ -31,10 +31,27 @@ Each repair-loop attempt is judged separately, matching the per-attempt
 granularity of `model_call` trace events — a turn that fails once and is
 repaired counts one fail and one pass.
 
+**E2E Success Rate** — % of whole agent turns that delivered a staged
+preview. Judged at the end of `run_turn` (graph.py), the only place a
+turn's final outcome exists. Unlike the two per-wall metrics this is a
+*user-facing* system metric, so infrastructure failures count: a turn
+that died because Gemini was unreachable still failed for the user.
+
+- preview — success: a validated plan was staged for review.
+- error   — failure, whatever the cause (repair budget exhausted,
+  unparseable reply, planner unreachable).
+- clarify — tracked but excluded from the rate: a correct clarifying
+  question is neither a delivery nor a failure. Counting it against
+  the agent would punish correct behaviour on ambiguous input;
+  counting it as success would let a clarify-happy model score 100%
+  while never delivering anything. `success_pct` is therefore
+  `preview / (preview + error)`.
+
 Counters are per-process and reset on restart — they answer "how is the
 model behaving right now". The durable per-call records live in the
 trace: `llm_reply` / unparseable `planner_error` for the first metric,
-`plan_validated` / `validation_failed` for the second.
+`plan_validated` / `validation_failed` for the second, `turn_finished`
+(with its `outcome` field) for the third.
 """
 
 from __future__ import annotations
@@ -73,3 +90,36 @@ class PassRateCounter:
         pct = round(100 * passed / total, 2) if total else None
         return {"total": total, "passed": passed, "failed": failed,
                 "pass_pct": pct}
+
+
+class TurnOutcomeCounter:
+    """Thread-safe tally of whole-turn outcomes for the E2E Success Rate.
+
+    A separate class (not PassRateCounter) because a turn has *three*
+    outcomes, and the clarify count must stay visible: hiding it would
+    make the derived rate impossible to sanity-check.
+    """
+
+    _OUTCOMES = ("preview", "clarify", "error")
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._counts = dict.fromkeys(self._OUTCOMES, 0)
+
+    def record(self, outcome: str) -> None:
+        """Tally one finished turn. Unknown outcomes are a programming
+        bug (the graph's outcome type is a Literal), so fail loudly."""
+        if outcome not in self._OUTCOMES:
+            raise ValueError(f"Unknown turn outcome: {outcome!r}")
+        with self._lock:
+            self._counts[outcome] += 1
+
+    def snapshot(self) -> dict:
+        """Outcome counts plus the derived rate. `success_pct` excludes
+        clarifications from the denominator (see module docstring) and is
+        None until the first decisive (preview/error) turn."""
+        with self._lock:
+            counts = dict(self._counts)
+        decisive = counts["preview"] + counts["error"]
+        pct = round(100 * counts["preview"] / decisive, 2) if decisive else None
+        return {"turns": sum(counts.values()), **counts, "success_pct": pct}

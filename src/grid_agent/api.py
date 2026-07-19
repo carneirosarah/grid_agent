@@ -43,7 +43,7 @@ from pydantic import BaseModel, Field
 from .config import DATASET_PATH, PROJECT_ROOT, SESSION_COOKIE
 from .graph import run_turn
 from .llm import GeminiPlanner, Planner, PlannerError
-from .metrics import PassRateCounter
+from .metrics import PassRateCounter, TurnOutcomeCounter
 from .persistence import make_repository
 from .sessions import SessionEntry, SessionStore
 from .state import PendingChange, StateError
@@ -164,9 +164,11 @@ def create_app(store: SessionStore | None = None,
     # The Gemini client is created lazily on the first chat message so the
     # app (and its non-chat endpoints) work even before a key is configured.
     shared = {"planner": planner}
-    # Semantic Validation Pass Rate tally — one server-wide counter fed by
-    # every chat turn's validate node (see metrics.py for counting rules).
+    # Server-wide tallies fed by every chat turn: the validate node
+    # records semantic verdicts, run_turn records final outcomes
+    # (counting rules in metrics.py).
     semantic = PassRateCounter()
+    e2e = TurnOutcomeCounter()
 
     def get_planner() -> Planner:
         if shared["planner"] is None:
@@ -210,12 +212,11 @@ def create_app(store: SessionStore | None = None,
 
     # -- observability -------------------------------------------------------
     @app.get("/api/metrics", tags=["observability"],
-             summary="LLM quality metrics (validity & semantic pass rates)")
+             summary="LLM quality metrics (validity, semantic, e2e rates)")
     def get_metrics() -> dict:
-        """Server-wide LLM quality metrics, one per wall. Each is a
-        `{total, passed, failed, pass_pct}` tally; `pass_pct` is `null`
-        until that wall has judged its first case (0/0 is "no data yet",
-        not 0%).
+        """Server-wide LLM quality metrics: one per wall, plus the
+        end-to-end turn rate. Rates are `null` until their first judged
+        case (0/0 is "no data yet", not 0%).
 
         - **structured_output_validity** — % of raw LLM responses that
           Pydantic accepted as a `WireReply` (via the SDK's parsed field
@@ -230,17 +231,28 @@ def create_app(store: SessionStore | None = None,
           counted. Each repair-loop attempt is judged separately, so a
           turn that fails once and is repaired counts one fail and one
           pass.
+        - **e2e_success** — whole agent turns by final outcome, as
+          `{turns, preview, clarify, error, success_pct}`. A turn
+          succeeds when it delivers a staged preview; it fails on any
+          error, *including* infrastructure ones — this is the
+          user-facing rate, so "Gemini was down" still counts as a
+          failed turn. Clarifying questions are tracked but excluded
+          from `success_pct` (= `preview / (preview + error)`): they are
+          correct behaviour on ambiguous input, neither a delivery nor a
+          failure.
 
         Counters are per-process and reset on restart. Durable per-call
         records live in the trace: `llm_reply` / unparseable
         `planner_error` for the first metric, `plan_validated` /
-        `validation_failed` for the second.
+        `validation_failed` for the second, `turn_finished` (with its
+        `outcome` field) for the third.
         """
         validity = getattr(shared["planner"], "validity", None)
         return {
             "structured_output_validity":
                 (validity or PassRateCounter()).snapshot(),
             "semantic_validation": semantic.snapshot(),
+            "e2e_success": e2e.snapshot(),
         }
 
     # -- chat: one agent turn ------------------------------------------------
@@ -277,7 +289,7 @@ def create_app(store: SessionStore | None = None,
         with ref.entry.lock:
             session = ref.entry.session
             result = run_turn(session, planner_impl, session.tracer, text,
-                              semantic=semantic)
+                              semantic=semantic, e2e=e2e)
             store.persist(ref.id)                   # chat history is durable
             return {"outcome": result.outcome, "message": result.message,
                     "table": table_payload(ref.entry)}

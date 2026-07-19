@@ -130,7 +130,7 @@ No API key or database needed (the live-Gemini and Postgres tests
 auto-skip when their credentials are absent):
 
 ```bash
-pytest            # 104 tests
+pytest            # 110 tests
 ```
 
 ## Architecture
@@ -190,7 +190,7 @@ src/grid_agent/
   sessions.py                 per-user session store (locks, LRU, persist)
   persistence.py              PostgreSQL / in-memory session repositories
   trace.py                    .jsonl event log (session-stamped events)
-  metrics.py                  pass-rate counters (validity + semantic)
+  metrics.py                  quality counters (validity, semantic, e2e)
   llm.py                      Step 7  — Gemini structured-output planner
   prompts/system_prompt.md    the agent's behavioural rules
   graph.py                    Step 8  — LangGraph plan→validate→preview
@@ -384,7 +384,7 @@ docker compose cp app:/app/traces/trace.jsonl traces/ # snapshot to host
 
 ## Metrics (`GET /api/metrics`)
 
-Two LLM-quality rates, each counted at the single place its verdict is
+Three LLM-quality rates, each counted at the single place its verdict is
 rendered (tallied by [metrics.py](src/grid_agent/metrics.py)):
 
 - **Structured Output Validity Rate** — % of raw LLM responses Pydantic
@@ -400,17 +400,27 @@ rendered (tallied by [metrics.py](src/grid_agent/metrics.py)):
   structural (`wire_to_plan`) failures never reach the semantic validator
   and are not counted; each repair-loop attempt is judged separately, so
   a repaired turn counts one fail and one pass.
+- **E2E Success Rate** — % of whole agent turns that delivered a staged
+  preview. Judged at the end of `run_turn`. This is the *user-facing*
+  rate, so unlike the per-wall metrics an infrastructure failure counts
+  as a failed turn. Clarifying questions are tracked but excluded from
+  the rate (`success_pct = preview / (preview + error)`): they are
+  correct behaviour on ambiguous input, neither a delivery nor a
+  failure — and counting them as success would let a clarify-happy
+  model score 100% while never delivering anything.
 
 ```bash
 curl -s localhost:8000/api/metrics
 # {"structured_output_validity": {"total": 12, "passed": 11, "failed": 1,
 #                                 "pass_pct": 91.67},
 #  "semantic_validation":        {"total": 11, "passed": 9, "failed": 2,
-#                                 "pass_pct": 81.82}}
+#                                 "pass_pct": 81.82},
+#  "e2e_success":                {"turns": 10, "preview": 7, "clarify": 2,
+#                                 "error": 1, "success_pct": 87.5}}
 ```
 
-`pass_pct` is `null` until that wall judges its first case (0/0 is "no
-data yet", not 0%). Counters are per-process and reset on restart; the
-durable per-call equivalents in the trace are `llm_reply` / unparseable
-`planner_error` for the first metric, `plan_validated` /
-`validation_failed` for the second.
+Rates are `null` until their first judged case (0/0 is "no data yet",
+not 0%). Counters are per-process and reset on restart; the durable
+per-call equivalents in the trace are `llm_reply` / unparseable
+`planner_error`, `plan_validated` / `validation_failed`, and
+`turn_finished` (whose `outcome` field carries the per-turn verdict).

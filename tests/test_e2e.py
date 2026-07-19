@@ -211,6 +211,46 @@ def test_semantic_rate_ignores_structural_failures(session):
     assert semantic.snapshot()["total"] == 0
 
 
+# --- E2E Success Rate --------------------------------------------------------
+
+def test_e2e_rate_tracks_all_three_outcomes(session):
+    """preview + clarify + give-up error across three turns: the rate
+    counts the decisive turns (1 success, 1 failure -> 50%) and reports
+    the clarification without letting it move the rate."""
+    from grid_agent.metrics import TurnOutcomeCounter
+
+    e2e = TurnOutcomeCounter()
+    planner = FakePlanner(GOOD_PLAN, CLARIFY,
+                          *[BAD_PLAN] * (MAX_REPAIR_ATTEMPTS + 1))
+    run_turn(session, planner, NullTracer(), "electronics +10%", e2e=e2e)
+    session.reject()                       # clear staging for the next turn
+    run_turn(session, planner, NullTracer(), "increase prices", e2e=e2e)
+    run_turn(session, planner, NullTracer(), "do the thing", e2e=e2e)
+
+    assert e2e.snapshot() == {
+        "turns": 3, "preview": 1, "clarify": 1, "error": 1,
+        "success_pct": 50.0}
+
+
+def test_e2e_rate_counts_planner_outage_as_failure(session):
+    """Unlike the per-wall metrics, E2E is user-facing: a turn that died
+    because the model was unreachable still failed for the user."""
+    from grid_agent.llm import PlannerError
+    from grid_agent.metrics import TurnOutcomeCounter
+
+    class DownPlanner:
+        def plan(self, table_context, history):
+            raise PlannerError("Gemini request failed: connection refused")
+
+    e2e = TurnOutcomeCounter()
+    result = run_turn(session, DownPlanner(), NullTracer(), "sort by price",
+                      e2e=e2e)
+    assert result.outcome == "error"
+    assert e2e.snapshot() == {
+        "turns": 1, "preview": 0, "clarify": 0, "error": 1,
+        "success_pct": 0.0}
+
+
 # --- trace persistence ------------------------------------------------------
 
 def test_full_turn_is_persisted_to_jsonl(tmp_path, small_df):

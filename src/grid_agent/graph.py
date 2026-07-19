@@ -47,7 +47,7 @@ from langgraph.graph import END, START, StateGraph
 
 from .config import MAX_REPAIR_ATTEMPTS
 from .llm import Planner, PlannerError, build_table_context
-from .metrics import PassRateCounter
+from .metrics import PassRateCounter, TurnOutcomeCounter
 from .schemas import Plan, WireReply, wire_to_plan
 from .state import PendingChange, TableSession
 from .trace import Tracer
@@ -193,12 +193,17 @@ def build_graph(session: TableSession, planner: Planner, tracer: Tracer,
 
 def run_turn(session: TableSession, planner: Planner, tracer: Tracer,
              user_message: str,
-             semantic: PassRateCounter | None = None) -> TurnResult:
+             semantic: PassRateCounter | None = None,
+             e2e: TurnOutcomeCounter | None = None) -> TurnResult:
     """Process one chat message end to end.
 
     Owns conversation-history hygiene: the user turn is recorded before the
     run; the assistant's user-facing reply is recorded after. Repair-loop
     noise stays out of the durable history (see module docstring).
+
+    `semantic` and `e2e` tally the Semantic Validation Pass Rate and the
+    E2E Success Rate (counting rules in metrics.py); the API passes
+    server-wide counters, other callers may omit them.
     """
     tracer.log("user_message", text=user_message)
     session.history.append({"role": "user", "text": user_message})
@@ -214,6 +219,9 @@ def run_turn(session: TableSession, planner: Planner, tracer: Tracer,
     message: str = final.get("message") or "Something went wrong."
     session.history.append({"role": "model", "text": message})
     tracer.log("turn_finished", outcome=outcome, message=message)
+    # The turn's final verdict is only known here — this is the one
+    # recording site for the E2E Success Rate.
+    (e2e or TurnOutcomeCounter()).record(outcome)
 
     return TurnResult(
         outcome=outcome,  # type: ignore[arg-type]

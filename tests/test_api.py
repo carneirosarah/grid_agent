@@ -145,15 +145,22 @@ def test_metrics_endpoint_reports_both_rates(small_df):
     # Nothing judged yet: null rates, not 0%.
     empty = {"total": 0, "passed": 0, "failed": 0, "pass_pct": None}
     assert client.get("/api/metrics").json() == {
-        "structured_output_validity": empty, "semantic_validation": empty}
+        "structured_output_validity": empty,
+        "semantic_validation": empty,
+        "e2e_success": {"turns": 0, "preview": 0, "clarify": 0, "error": 0,
+                        "success_pct": None}}
 
-    # One chat turn: GOOD_PLAN flows through the validate node and passes.
+    # One chat turn: GOOD_PLAN flows through the validate node and passes,
+    # and the finished turn lands in the e2e tally as a preview.
     client.post("/api/chat", json={"message": "electronics +10%"})
     planner.validity.record(True)               # planner-side judgement
     metrics = client.get("/api/metrics").json()
     assert metrics["semantic_validation"] == {
         "total": 1, "passed": 1, "failed": 0, "pass_pct": 100.0}
     assert metrics["structured_output_validity"]["pass_pct"] == 100.0
+    assert metrics["e2e_success"] == {
+        "turns": 1, "preview": 1, "clarify": 0, "error": 0,
+        "success_pct": 100.0}
 
 
 def test_metrics_endpoint_works_without_a_counter(client):
