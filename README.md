@@ -130,7 +130,7 @@ No API key or database needed (the live-Gemini and Postgres tests
 auto-skip when their credentials are absent):
 
 ```bash
-pytest            # 100 tests
+pytest            # 104 tests
 ```
 
 ## Architecture
@@ -190,7 +190,7 @@ src/grid_agent/
   sessions.py                 per-user session store (locks, LRU, persist)
   persistence.py              PostgreSQL / in-memory session repositories
   trace.py                    .jsonl event log (session-stamped events)
-  metrics.py                  Structured Output Validity Rate counter
+  metrics.py                  pass-rate counters (validity + semantic)
   llm.py                      Step 7  — Gemini structured-output planner
   prompts/system_prompt.md    the agent's behavioural rules
   graph.py                    Step 8  — LangGraph plan→validate→preview
@@ -384,20 +384,33 @@ docker compose cp app:/app/traces/trace.jsonl traces/ # snapshot to host
 
 ## Metrics (`GET /api/metrics`)
 
-**Structured Output Validity Rate** — the percentage of raw LLM responses
-Pydantic accepted as a `WireReply`, i.e. how often the first of the three
-walls (schema-constrained decoding) holds. Counted at the only place that
-boundary exists ([llm.py](src/grid_agent/llm.py), tallied by
-[metrics.py](src/grid_agent/metrics.py)); a reply parsed from raw-text
-fallback still counts as accepted, and transport failures are excluded —
-no response existed, so validity was never in question.
+Two LLM-quality rates, each counted at the single place its verdict is
+rendered (tallied by [metrics.py](src/grid_agent/metrics.py)):
+
+- **Structured Output Validity Rate** — % of raw LLM responses Pydantic
+  accepted as a `WireReply`: how often wall 1 (schema-constrained
+  decoding) holds. Judged in [llm.py](src/grid_agent/llm.py). A reply
+  parsed via the raw-text fallback still counts as passed; transport
+  failures are excluded — no response existed, so validity was never in
+  question.
+- **Semantic Validation Pass Rate** — % of structural plans the semantic
+  validator accepted against the live table: how often wall 3 holds.
+  Judged in the graph's validate node
+  ([graph.py](src/grid_agent/graph.py)). Clarifying questions and
+  structural (`wire_to_plan`) failures never reach the semantic validator
+  and are not counted; each repair-loop attempt is judged separately, so
+  a repaired turn counts one fail and one pass.
 
 ```bash
 curl -s localhost:8000/api/metrics
-# {"llm_responses": 12, "accepted": 11, "rejected": 1, "validity_pct": 91.67}
+# {"structured_output_validity": {"total": 12, "passed": 11, "failed": 1,
+#                                 "pass_pct": 91.67},
+#  "semantic_validation":        {"total": 11, "passed": 9, "failed": 2,
+#                                 "pass_pct": 81.82}}
 ```
 
-`validity_pct` is `null` until the first response is judged (0/0 is "no
+`pass_pct` is `null` until that wall judges its first case (0/0 is "no
 data yet", not 0%). Counters are per-process and reset on restart; the
-durable per-call equivalents in the trace are `llm_reply` (accepted) and
-`planner_error` events mentioning "unparseable" (rejected).
+durable per-call equivalents in the trace are `llm_reply` / unparseable
+`planner_error` for the first metric, `plan_validated` /
+`validation_failed` for the second.

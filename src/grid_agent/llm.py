@@ -36,7 +36,7 @@ from .config import (
     GEMINI_PRICE_INPUT_PER_1M,
     GEMINI_PRICE_OUTPUT_PER_1M,
 )
-from .metrics import ValidityCounter
+from .metrics import PassRateCounter
 from .schemas import WireReply
 
 # Behavioural rules for the model, versioned as a standalone Markdown file.
@@ -127,7 +127,7 @@ class GeminiPlanner:
     """Planner backed by the google-genai SDK with structured output."""
 
     def __init__(self, api_key: str = GEMINI_API_KEY, model: str = GEMINI_MODEL,
-                 validity: ValidityCounter | None = None):
+                 validity: PassRateCounter | None = None):
         if not api_key:
             raise PlannerError(
                 "GEMINI_API_KEY is not set. Copy .env.example to .env and "
@@ -138,7 +138,7 @@ class GeminiPlanner:
         self._model = model
         # Structured Output Validity Rate tally (see metrics.py for the
         # counting rules); exposed by the API at GET /api/metrics.
-        self.validity = validity or ValidityCounter()
+        self.validity = validity or PassRateCounter()
 
     def plan(self, table_context: str,
              history: list[dict[str, str]]) -> tuple[WireReply, ModelCall]:

@@ -47,6 +47,7 @@ from langgraph.graph import END, START, StateGraph
 
 from .config import MAX_REPAIR_ATTEMPTS
 from .llm import Planner, PlannerError, build_table_context
+from .metrics import PassRateCounter
 from .schemas import Plan, WireReply, wire_to_plan
 from .state import PendingChange, TableSession
 from .trace import Tracer
@@ -72,13 +73,19 @@ class TurnResult:
     pending: PendingChange | None = None
 
 
-def build_graph(session: TableSession, planner: Planner, tracer: Tracer):
+def build_graph(session: TableSession, planner: Planner, tracer: Tracer,
+                semantic: PassRateCounter | None = None):
     """Compile the plan->validate->preview graph.
 
     Nodes close over (session, planner, tracer): the graph state itself
     stays small, while the heavyweight objects (the DataFrame, the LLM
     client) live outside it.
+
+    `semantic` tallies the Semantic Validation Pass Rate (see metrics.py
+    for the counting rules); the API passes one server-wide counter, and
+    callers that don't care (tests, scripts) get a throwaway.
     """
+    semantic = semantic or PassRateCounter()
 
     # -- node: plan ---------------------------------------------------------
     def plan_node(state: AgentState) -> AgentState:
@@ -121,7 +128,12 @@ def build_graph(session: TableSession, planner: Planner, tracer: Tracer):
 
         structural_plan, errors = wire_to_plan(reply)
         if not errors:
+            # A structural plan reached the semantic validator — its
+            # verdict feeds the Semantic Validation Pass Rate. Structural
+            # failures above never get here and are deliberately not
+            # counted (wall 2, not wall 3 — see metrics.py).
             result = validate_plan(session.df, structural_plan)
+            semantic.record(result.ok)
             if result.ok:
                 tracer.log("plan_validated", plan=result.plan.model_dump())
                 return {"plan": result.plan, "errors": []}
@@ -180,7 +192,8 @@ def build_graph(session: TableSession, planner: Planner, tracer: Tracer):
 
 
 def run_turn(session: TableSession, planner: Planner, tracer: Tracer,
-             user_message: str) -> TurnResult:
+             user_message: str,
+             semantic: PassRateCounter | None = None) -> TurnResult:
     """Process one chat message end to end.
 
     Owns conversation-history hygiene: the user turn is recorded before the
@@ -190,7 +203,7 @@ def run_turn(session: TableSession, planner: Planner, tracer: Tracer,
     tracer.log("user_message", text=user_message)
     session.history.append({"role": "user", "text": user_message})
 
-    app = build_graph(session, planner, tracer)
+    app = build_graph(session, planner, tracer, semantic)
     final: AgentState = app.invoke({
         "history": list(session.history),
         "attempts": 0,

@@ -159,6 +159,58 @@ def test_persistently_wrong_planner_gives_up_without_touching_data(session):
     pd.testing.assert_frame_equal(session.df, before)  # data untouched
 
 
+# --- Semantic Validation Pass Rate ------------------------------------------
+
+def test_semantic_rate_counts_valid_plan_as_pass(session):
+    from grid_agent.metrics import PassRateCounter
+
+    semantic = PassRateCounter()
+    run_turn(session, FakePlanner(GOOD_PLAN), NullTracer(), "electronics +10%",
+             semantic=semantic)
+    assert semantic.snapshot() == {
+        "total": 1, "passed": 1, "failed": 0, "pass_pct": 100.0}
+
+
+def test_semantic_rate_counts_each_repair_attempt(session):
+    """A repaired turn is one fail + one pass — per-attempt granularity,
+    matching the model_call trace events."""
+    from grid_agent.metrics import PassRateCounter
+
+    semantic = PassRateCounter()
+    run_turn(session, FakePlanner(BAD_PLAN, GOOD_PLAN), NullTracer(),
+             "increase eletronics prises", semantic=semantic)
+    assert semantic.snapshot() == {
+        "total": 2, "passed": 1, "failed": 1, "pass_pct": 50.0}
+
+
+def test_semantic_rate_ignores_clarifications(session):
+    """A clarify reply proposes no plan, so there is nothing to judge."""
+    from grid_agent.metrics import PassRateCounter
+
+    semantic = PassRateCounter()
+    run_turn(session, FakePlanner(CLARIFY), NullTracer(), "increase prices",
+             semantic=semantic)
+    assert semantic.snapshot()["total"] == 0
+
+
+def test_semantic_rate_ignores_structural_failures(session):
+    """A reply that fails wire_to_plan (here: no target_column) never
+    reaches the semantic validator — wall 2, not wall 3."""
+    from grid_agent.metrics import PassRateCounter
+
+    structurally_broken = WireReply(
+        intent="plan",
+        operations=[WireOperation(kind="update_where", target_column="",
+                                  action="set", value="9")])
+    semantic = PassRateCounter()
+    result = run_turn(
+        session,
+        FakePlanner(*[structurally_broken] * (MAX_REPAIR_ATTEMPTS + 1)),
+        NullTracer(), "do something", semantic=semantic)
+    assert result.outcome == "error"
+    assert semantic.snapshot()["total"] == 0
+
+
 # --- trace persistence ------------------------------------------------------
 
 def test_full_turn_is_persisted_to_jsonl(tmp_path, small_df):

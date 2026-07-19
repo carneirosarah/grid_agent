@@ -43,7 +43,7 @@ from pydantic import BaseModel, Field
 from .config import DATASET_PATH, PROJECT_ROOT, SESSION_COOKIE
 from .graph import run_turn
 from .llm import GeminiPlanner, Planner, PlannerError
-from .metrics import ValidityCounter
+from .metrics import PassRateCounter
 from .persistence import make_repository
 from .sessions import SessionEntry, SessionStore
 from .state import PendingChange, StateError
@@ -164,6 +164,9 @@ def create_app(store: SessionStore | None = None,
     # The Gemini client is created lazily on the first chat message so the
     # app (and its non-chat endpoints) work even before a key is configured.
     shared = {"planner": planner}
+    # Semantic Validation Pass Rate tally — one server-wide counter fed by
+    # every chat turn's validate node (see metrics.py for counting rules).
+    semantic = PassRateCounter()
 
     def get_planner() -> Planner:
         if shared["planner"] is None:
@@ -207,28 +210,38 @@ def create_app(store: SessionStore | None = None,
 
     # -- observability -------------------------------------------------------
     @app.get("/api/metrics", tags=["observability"],
-             summary="Structured Output Validity Rate")
+             summary="LLM quality metrics (validity & semantic pass rates)")
     def get_metrics() -> dict:
-        """**Structured Output Validity Rate** — the percentage of raw LLM
-        responses that Pydantic accepted as a `WireReply` (the wire schema
-        the model is constrained to). Server-wide, across all sessions.
+        """Server-wide LLM quality metrics, one per wall. Each is a
+        `{total, passed, failed, pass_pct}` tally; `pass_pct` is `null`
+        until that wall has judged its first case (0/0 is "no data yet",
+        not 0%).
 
-        - **llm_responses** — responses judged so far (accepted + rejected).
-        - **accepted** — parsed into a `WireReply`, via the SDK's parsed
-          field or the raw-text fallback.
-        - **rejected** — a response arrived but Pydantic could not parse
-          it. Transport failures (network/auth/quota) are *not* counted:
-          no response existed, so validity was never in question.
-        - **validity_pct** — `100 * accepted / llm_responses`, rounded to
-          2 decimals; `null` until the first response is judged.
+        - **structured_output_validity** — % of raw LLM responses that
+          Pydantic accepted as a `WireReply` (via the SDK's parsed field
+          or the raw-text fallback). Transport failures (network/auth/
+          quota) are *not* counted: no response existed, so validity was
+          never in question.
+        - **semantic_validation** — % of structural plans that the
+          semantic validator accepted against the live table (real
+          columns, coercible values, numeric-only rules, protected
+          `sku`…). Clarify-intent replies and structural conversion
+          failures never reach the semantic validator and are not
+          counted. Each repair-loop attempt is judged separately, so a
+          turn that fails once and is repaired counts one fail and one
+          pass.
 
-        Counters are per-process and reset on restart. For durable
-        per-call records, see the trace: `llm_reply` events are accepted
-        responses; `planner_error` events with an "unparseable" message
-        are rejected ones.
+        Counters are per-process and reset on restart. Durable per-call
+        records live in the trace: `llm_reply` / unparseable
+        `planner_error` for the first metric, `plan_validated` /
+        `validation_failed` for the second.
         """
-        counter = getattr(shared["planner"], "validity", None)
-        return counter.snapshot() if counter else ValidityCounter().snapshot()
+        validity = getattr(shared["planner"], "validity", None)
+        return {
+            "structured_output_validity":
+                (validity or PassRateCounter()).snapshot(),
+            "semantic_validation": semantic.snapshot(),
+        }
 
     # -- chat: one agent turn ------------------------------------------------
     @app.post("/api/chat", tags=["agent"],
@@ -263,7 +276,8 @@ def create_app(store: SessionStore | None = None,
             raise HTTPException(503, str(exc)) from exc
         with ref.entry.lock:
             session = ref.entry.session
-            result = run_turn(session, planner_impl, session.tracer, text)
+            result = run_turn(session, planner_impl, session.tracer, text,
+                              semantic=semantic)
             store.persist(ref.id)                   # chat history is durable
             return {"outcome": result.outcome, "message": result.message,
                     "table": table_payload(ref.entry)}

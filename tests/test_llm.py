@@ -23,7 +23,7 @@ from grid_agent.llm import (
     PlannerError,
     build_table_context,
 )
-from grid_agent.metrics import ValidityCounter
+from grid_agent.metrics import PassRateCounter
 from grid_agent.schemas import WireReply
 
 # --- system prompt ---------------------------------------------------------
@@ -75,7 +75,7 @@ def make_planner(response=None, error: Exception | None = None) -> GeminiPlanner
     """Build a planner whose client returns `response` or raises `error`."""
     planner = GeminiPlanner.__new__(GeminiPlanner)   # skip real __init__
     planner._model = "stub-model"
-    planner.validity = ValidityCounter()
+    planner.validity = PassRateCounter()
 
     def generate_content(**kwargs):
         generate_content.last_kwargs = kwargs        # captured for asserts
@@ -170,8 +170,8 @@ def test_validity_counts_parsed_reply_as_accepted(small_df):
     planner.plan(build_table_context(small_df), [])
     planner.plan(build_table_context(small_df), [])
     assert planner.validity.snapshot() == {
-        "llm_responses": 2, "accepted": 2, "rejected": 0,
-        "validity_pct": 100.0}
+        "total": 2, "passed": 2, "failed": 0,
+        "pass_pct": 100.0}
 
 
 def test_validity_counts_fallback_text_parse_as_accepted(small_df):
@@ -180,7 +180,7 @@ def test_validity_counts_fallback_text_parse_as_accepted(small_df):
     planner = make_planner(SimpleNamespace(parsed=None,
                                            text=GOOD_REPLY.model_dump_json()))
     planner.plan(build_table_context(small_df), [])
-    assert planner.validity.snapshot()["validity_pct"] == 100.0
+    assert planner.validity.snapshot()["pass_pct"] == 100.0
 
 
 def test_validity_counts_unparseable_reply_as_rejected(small_df):
@@ -188,8 +188,8 @@ def test_validity_counts_unparseable_reply_as_rejected(small_df):
     with pytest.raises(PlannerError):
         planner.plan(build_table_context(small_df), [])
     assert planner.validity.snapshot() == {
-        "llm_responses": 1, "accepted": 0, "rejected": 1,
-        "validity_pct": 0.0}
+        "total": 1, "passed": 0, "failed": 1,
+        "pass_pct": 0.0}
 
 
 def test_validity_ignores_transport_failures(small_df):
@@ -198,7 +198,7 @@ def test_validity_ignores_transport_failures(small_df):
     planner = make_planner(error=RuntimeError("connection reset"))
     with pytest.raises(PlannerError):
         planner.plan(build_table_context(small_df), [])
-    assert planner.validity.snapshot()["llm_responses"] == 0
+    assert planner.validity.snapshot()["total"] == 0
 
 
 def test_sdk_exception_is_wrapped(small_df):

@@ -129,32 +129,38 @@ def test_concurrent_double_accept_commits_exactly_once(small_df):
     assert row["price"] == 27.5          # applied once: 25.0 * 1.1
 
 
-def test_metrics_endpoint_reports_validity_rate(small_df):
-    """GET /api/metrics surfaces the planner's ValidityCounter."""
-    from grid_agent.metrics import ValidityCounter
+def test_metrics_endpoint_reports_both_rates(small_df):
+    """GET /api/metrics: structured-output validity from the planner's
+    counter, semantic pass rate fed by real chat turns."""
+    from grid_agent.metrics import PassRateCounter
 
     planner = FakePlanner(GOOD_PLAN)
-    planner.validity = ValidityCounter()        # as GeminiPlanner carries
+    planner.validity = PassRateCounter()        # as GeminiPlanner carries
     store = SessionStore(df_factory=lambda: small_df.copy(),
                          repository=InMemorySessionRepository(),
                          tracer=NullTracer())
     client = TestClient(create_app(store=store, planner=planner,
                                    tracer=NullTracer()))
 
-    # No LLM responses yet: null rate, not 0%.
+    # Nothing judged yet: null rates, not 0%.
+    empty = {"total": 0, "passed": 0, "failed": 0, "pass_pct": None}
     assert client.get("/api/metrics").json() == {
-        "llm_responses": 0, "accepted": 0, "rejected": 0,
-        "validity_pct": None}
+        "structured_output_validity": empty, "semantic_validation": empty}
 
-    planner.validity.record(True)
-    planner.validity.record(False)
-    assert client.get("/api/metrics").json()["validity_pct"] == 50.0
+    # One chat turn: GOOD_PLAN flows through the validate node and passes.
+    client.post("/api/chat", json={"message": "electronics +10%"})
+    planner.validity.record(True)               # planner-side judgement
+    metrics = client.get("/api/metrics").json()
+    assert metrics["semantic_validation"] == {
+        "total": 1, "passed": 1, "failed": 0, "pass_pct": 100.0}
+    assert metrics["structured_output_validity"]["pass_pct"] == 100.0
 
 
 def test_metrics_endpoint_works_without_a_counter(client):
     """A planner with no counter (or none created yet) yields the empty
     shape — the endpoint must never 500 over observability."""
-    assert client.get("/api/metrics").json()["llm_responses"] == 0
+    body = client.get("/api/metrics").json()
+    assert body["structured_output_validity"]["total"] == 0
 
 
 def test_openapi_documents_all_endpoints(client):
